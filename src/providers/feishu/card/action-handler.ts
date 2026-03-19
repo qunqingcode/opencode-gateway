@@ -22,19 +22,13 @@ export interface FeishuCardActionEvent {
   userId: string;
 }
 
-/** 卡片动作回调接口 - 由 index.ts 注入 */
+/** 卡片动作回调接口 */
 export interface CardActionCallbacks {
-  /** 回复权限请求 */
   replyPermission(requestId: string, reply: 'once' | 'always' | 'reject'): Promise<boolean>;
-  /** 回复问题 */
   replyQuestion(requestId: string, answers: string[]): Promise<boolean>;
-  /** 拒绝问题 */
   rejectQuestion(requestId: string): Promise<boolean>;
-  /** 权限/问题回复后继续处理 */
   continueAfterReply(chatId: string): Promise<ContinueResult>;
-  /** 创建 MR */
   createMR?(sourceBranch: string, targetBranch: string, title: string): Promise<MergeRequest>;
-  /** 获取 chatId (从 pendingRequests) */
   getChatId(requestId: string): string;
 }
 
@@ -55,7 +49,44 @@ export interface Logger {
   info(msg: string, ...args: unknown[]): void;
   error(msg: string, ...args: unknown[]): void;
   warn(msg: string, ...args: unknown[]): void;
-  debug?(msg: string, ...args: unknown[]): void;
+}
+
+// ============================================================
+// 通用函数
+// ============================================================
+
+/**
+ * 处理 continueAfterReply 的后续结果
+ * 
+ * 抽取公共逻辑：根据 result.type 返回对应的卡片或 toast
+ */
+function handleContinueResult(
+  result: ContinueResult,
+  userId: string,
+  chatId: string,
+  successMessage: string
+): CardActionResult {
+  if (result.type === 'response') {
+    return { toast: { type: 'success', content: successMessage } };
+  }
+
+  if (result.type === 'permission') {
+    const perm = result.data as PermissionCardParams['permission'];
+    return {
+      toast: { type: 'info', content: '需要更多权限确认' },
+      card: createPermissionCard({ operatorOpenId: userId, chatId, permission: perm }),
+    };
+  }
+
+  if (result.type === 'question') {
+    const q = result.data as QuestionCardParams['question'];
+    return {
+      toast: { type: 'info', content: '需要回复问题' },
+      card: createQuestionCard({ operatorOpenId: userId, chatId, question: q }),
+    };
+  }
+
+  return { toast: { type: 'success', content: successMessage } };
 }
 
 // ============================================================
@@ -69,16 +100,13 @@ export function createCardActionHandler(
   callbacks: CardActionCallbacks,
   logger: Logger
 ) {
-  return async function handleCardAction(
-    event: FeishuCardActionEvent
-  ): Promise<CardActionResult> {
+  return async function handleCardAction(event: FeishuCardActionEvent): Promise<CardActionResult> {
     logger.info(`[CardAction] action=${event.action} userId=${event.userId}`);
 
     const decoded = decodeFeishuCardAction({
       event: {
         operator: { open_id: event.userId },
         action: { value: event.value },
-        // 传递一个空对象作为 context，防止在 decodeFeishuCardAction 中读取 event.context.chat_id 时报 undefined 错误
         context: {},
       },
     });
@@ -96,17 +124,14 @@ export function createCardActionHandler(
     const envelope = decoded.envelope;
     const action = envelope.a;
 
-    // Permission actions
     if (action.startsWith('permission.')) {
       return handlePermissionAction(action, envelope, event, callbacks, logger);
     }
 
-    // Question actions
     if (action.startsWith('question.')) {
       return handleQuestionAction(action, envelope, event, callbacks, logger);
     }
 
-    // Code change actions
     if (action.startsWith('code_change.')) {
       return handleCodeChangeAction(action, envelope, callbacks, logger);
     }
@@ -139,39 +164,12 @@ async function handlePermissionAction(
   const chatId = callbacks.getChatId(requestId);
   const result = await callbacks.continueAfterReply(chatId);
 
-  if (result.type === 'response') {
-    return {
-      toast: { type: 'success', content: `已${reply === 'reject' ? '拒绝' : '批准'}权限请求` },
-    };
-  }
-
-  if (result.type === 'permission') {
-    const perm = result.data as PermissionCardParams['permission'];
-    const card = createPermissionCard({
-      operatorOpenId: event.userId,
-      chatId,
-      permission: perm,
-    });
-    return {
-      toast: { type: 'info', content: '需要更多权限确认' },
-      card,
-    };
-  }
-
-  if (result.type === 'question') {
-    const q = result.data as QuestionCardParams['question'];
-    const card = createQuestionCard({
-      operatorOpenId: event.userId,
-      chatId,
-      question: q,
-    });
-    return {
-      toast: { type: 'info', content: '需要回复问题' },
-      card,
-    };
-  }
-
-  return { toast: { type: 'success', content: `已${reply === 'reject' ? '拒绝' : '批准'}权限请求` } };
+  return handleContinueResult(
+    result,
+    event.userId,
+    chatId,
+    `已${reply === 'reject' ? '拒绝' : '批准'}权限请求`
+  );
 }
 
 // ============================================================
@@ -199,31 +197,7 @@ async function handleQuestionAction(
     const chatId = callbacks.getChatId(requestId);
     const result = await callbacks.continueAfterReply(chatId);
 
-    if (result.type === 'response') {
-      return { toast: { type: 'success', content: `已回复: ${answer}` } };
-    }
-
-    if (result.type === 'permission') {
-      const perm = result.data as PermissionCardParams['permission'];
-      const card = createPermissionCard({
-        operatorOpenId: event.userId,
-        chatId,
-        permission: perm,
-      });
-      return { toast: { type: 'info', content: '需要权限确认' }, card };
-    }
-
-    if (result.type === 'question') {
-      const q = result.data as QuestionCardParams['question'];
-      const card = createQuestionCard({
-        operatorOpenId: event.userId,
-        chatId,
-        question: q,
-      });
-      return { toast: { type: 'info', content: '需要回复更多问题' }, card };
-    }
-
-    return { toast: { type: 'success', content: `已回复: ${answer}` } };
+    return handleContinueResult(result, event.userId, chatId, `已回复: ${answer}`);
   }
 
   if (actionType === 'cancel') {
@@ -257,7 +231,6 @@ async function handleCodeChangeAction(
     try {
       const sourceBranch = branchName || `ai-change-${Date.now()}`;
       const targetBranch = 'develop';
-
       const mr = await callbacks.createMR(sourceBranch, targetBranch, `AI 代码修改: ${sourceBranch}`);
 
       logger.info(`[CodeChange] MR created: ${mr.url}`);
@@ -267,7 +240,7 @@ async function handleCodeChangeAction(
         card: createStatusCard({
           title: '✅ MR 创建成功',
           status: 'success',
-          message: `已创建 Merge Request`,
+          message: '已创建 Merge Request',
           details: `[查看 MR](${mr.url})\n\n分支: \`${sourceBranch}\` → \`${targetBranch}\``,
         }),
       };

@@ -48,14 +48,22 @@ function Invoke-Run {
         }
     }
 
+    # Prompt user for project path
+    Write-Host ""
+    $ProjectPath = Read-Host "Please enter the project path (leave empty for current directory)"
+    if ([string]::IsNullOrWhiteSpace($ProjectPath)) {
+        $ProjectPath = "."
+    }
+    Write-Host ""
+
     # Check if OpenCode Server is running
     Write-Host "[1/4] Checking OpenCode Server on port $OpenCodePort..."
     $listener = Get-NetTCPConnection -LocalPort $OpenCodePort -State Listen -ErrorAction SilentlyContinue
     if ($listener) {
         Write-Host "      OpenCode Server already running on port $OpenCodePort"
     } else {
-        Write-Host "      Starting OpenCode Server on port $OpenCodePort..."
-        Start-Process -FilePath "opencode" -ArgumentList "serve", "--port", $OpenCodePort -WindowStyle Normal
+        Write-Host "      Starting OpenCode Server on port $OpenCodePort with path: $ProjectPath..."
+        Start-Process -FilePath "opencode" -ArgumentList "serve", "--port", $OpenCodePort -WorkingDirectory $ProjectPath -WindowStyle Normal
         
         # Wait for server to start
         $count = 0

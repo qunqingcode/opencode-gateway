@@ -2,7 +2,10 @@
  * 核心模块导出
  */
 
+// ============================================================
 // 类型导出
+// ============================================================
+
 export type {
   ProviderCapability,
   ProviderType,
@@ -22,7 +25,10 @@ export type {
   GatewayConfig,
 } from './types';
 
-// Provider 接口和基类导出
+// ============================================================
+// Provider 接口和基类
+// ============================================================
+
 export type {
   IProvider,
   IMessengerProvider,
@@ -34,7 +40,10 @@ export type {
 
 export { BaseProvider } from './provider';
 
-// Registry 导出
+// ============================================================
+// Registry
+// ============================================================
+
 export {
   registerProvider,
   registerProviders,
@@ -54,3 +63,22 @@ export {
   isNotificationProvider,
   ProviderManager,
 } from './registry';
+
+// ============================================================
+// Context
+// ============================================================
+
+export { gatewayContext } from './context';
+
+// ============================================================
+// Request Registry
+// ============================================================
+
+export { requestRegistry } from './request-registry';
+
+// ============================================================
+// Queue
+// ============================================================
+
+export { enqueueMessage, setMessageHandler, getQueueStats } from './queue';
+export type { MessageHandler } from './queue';

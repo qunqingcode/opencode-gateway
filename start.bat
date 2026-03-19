@@ -43,14 +43,21 @@ for /f "tokens=2 delims==" %%a in ('findstr "OPENCODE_API_URL" .env 2^>nul') do 
 )
 set "OPENCODE_PORT=%OPENCODE_PORT: =%"
 
+:: Prompt user for project path
+set "PROJECT_PATH="
+echo.
+set /p "PROJECT_PATH=Please enter the project path (leave empty for current directory): "
+if "%PROJECT_PATH%"=="" set "PROJECT_PATH=."
+echo.
+
 :: Check if OpenCode Server is running
 echo [1/4] Checking OpenCode Server on port %OPENCODE_PORT%...
 netstat -ano | findstr ":%OPENCODE_PORT%" | findstr "LISTENING" >nul 2>&1
 if %ERRORLEVEL% equ 0 (
     echo       OpenCode Server already running on port %OPENCODE_PORT%
 ) else (
-    echo       Starting OpenCode Server on port %OPENCODE_PORT%...
-    start "OpenCode Server" opencode serve --port %OPENCODE_PORT%
+    echo       Starting OpenCode Server on port %OPENCODE_PORT% with path: %PROJECT_PATH%...
+    start "OpenCode Server" /D "%PROJECT_PATH%" opencode serve --port %OPENCODE_PORT%
     
     :: Wait for server to start
     set /a COUNT=0

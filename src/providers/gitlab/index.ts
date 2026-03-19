@@ -242,6 +242,7 @@ export class GitLabProvider extends BaseProvider implements IRepositoryProvider 
             ...(postData ? { 'Content-Length': Buffer.byteLength(postData) } : {}),
           },
           timeout,
+          rejectUnauthorized: false,  // 允许自签名证书
         },
         res => {
           let data = '';
