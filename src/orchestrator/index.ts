@@ -92,6 +92,7 @@ export function createMessageHandler(provider: IMessengerProvider): MessageHandl
       if (result.type === 'response') {
         await replyWithFiles(chatId, result.data as string, messageId, provider);
       }
+
     } catch (error) {
       logger.error('[Message] Processing failed:', error);
       await provider.sendText(chatId, `❌ 处理出错: ${(error as Error).message}`, messageId);

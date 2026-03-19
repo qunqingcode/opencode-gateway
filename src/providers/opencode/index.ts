@@ -6,7 +6,6 @@
  * 2. Session 会话管理（多租户隔离）
  * 3. AI 对话交互
  * 4. 权限/问题请求处理
- * 5. 代码修改请求解析
  */
 
 import { CONFIG } from '../../config';
@@ -20,26 +19,18 @@ import { appLogger as logger } from '../../utils/logger';
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type OpenCodeClient = any;
 
-/** OpenCode API 响应 */
-interface OpenCodeResponse {
-  data?: {
-    info?: {
-      error?: {
-        name?: string;
-        message?: string;
-        data?: { message?: string };
-      };
-    };
-    parts?: ResponsePart[];
-  };
-}
-
 /** 响应部分 */
 interface ResponsePart {
-  type: 'text' | 'patch';
+  type: 'text' | 'patch' | 'tool';
   text?: string;
   ignored?: boolean;
   files?: string[];
+  tool?: string;
+  state?: {
+    status: 'pending' | 'running' | 'completed' | 'error';
+    output?: string;
+    input?: Record<string, unknown>;
+  };
 }
 
 /** 代码修改请求 */
@@ -101,20 +92,6 @@ const SESSION_TTL_MS = 3600000;   // 1 小时
 const CONTINUE_POLL_INTERVAL_MS = 1000;
 const CONTINUE_POLL_MAX_ATTEMPTS = 15;
 
-/** 代码修改 JSON Schema 提示 */
-const CODE_CHANGE_SYSTEM_PROMPT = `
-If you need to make code changes, you MUST output a raw JSON block wrapped in \`\`\`json.
-The JSON object must have the following schema:
-{
-  "action": "code_change",
-  "branchName": "feature-branch-name",
-  "summary": "Short description of changes",
-  "changelog": "Detailed bullet points...",
-  "files": ["path/to/file1.ts", "path/to/file2.ts"]
-}
-Do NOT use custom tags like [CODE_CHANGE_REQUEST]. Use standard JSON.
-`;
-
 // ============================================================
 // SDK 客户端管理
 // ============================================================
@@ -154,6 +131,7 @@ export async function init(): Promise<OpenCodeClient | null> {
 export async function preInit(): Promise<void> {
   logger.info('[OpenCode] Pre-initializing SDK...');
   await init();
+  logger.info('[OpenCode] SDK ready');
 }
 
 /**
@@ -355,90 +333,75 @@ function extractCompleteJson(text: string, startIndex: number): string | null {
 }
 
 /**
- * 从文本中提取所有 JSON 块
- */
-function extractJsonBlocks(text: string): string[] {
-  const blocks: string[] = [];
-
-  // 方法1: 提取 ```json ... ``` 代码块
-  const codeBlockRegex = /```(?:json)?\s*([\s\S]*?)```/g;
-  let match;
-  while ((match = codeBlockRegex.exec(text)) !== null) {
-    const content = match[1].trim();
-    if (content.startsWith('{') && content.endsWith('}')) {
-      blocks.push(content);
-    }
-  }
-
-  // 方法2: 如果没找到代码块，尝试直接提取 JSON
-  if (blocks.length === 0) {
-    let startIdx = text.indexOf('{');
-    while (startIdx !== -1) {
-      const extracted = extractCompleteJson(text, startIdx);
-      if (extracted) {
-        blocks.push(extracted);
-        startIdx = text.indexOf('{', startIdx + extracted.length);
-      } else {
-        startIdx = text.indexOf('{', startIdx + 1);
-      }
-    }
-  }
-
-  return blocks;
-}
-
-/**
- * 解析代码修改请求 JSON
- */
-function parseCodeChangeJson(parsed: Record<string, unknown>): CodeChangeRequest | null {
-  // 验证必要字段
-  const summary = parsed.summary as string | undefined;
-  const rawFiles = parsed.files;
-  
-  if (!summary) return null;
-
-  // 解析 files 字段
-  let files: string[];
-  if (Array.isArray(rawFiles)) {
-    files = rawFiles.map(String);
-  } else if (typeof rawFiles === 'string') {
-    files = rawFiles.split(',').map(f => f.trim()).filter(Boolean);
-  } else {
-    return null;
-  }
-
-  if (files.length === 0) return null;
-
-  return {
-    id: `code_change_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
-    branchName: (parsed.branchName || parsed.branch || `ai-change-${Date.now()}`) as string,
-    summary,
-    changelog: parsed.changelog as string | undefined,
-    files,
-    docUrl: (parsed.docUrl || parsed.doc_url) as string | undefined,
-  };
-}
-
-/**
  * 从文本中提取代码修改请求
  */
 function extractCodeChangeFromText(text: string): CodeChangeRequest | null {
-  const jsonBlocks = extractJsonBlocks(text);
-
-  for (const block of jsonBlocks) {
+  // 提取 ```json ... ``` 代码块
+  const codeBlockRegex = /```(?:json)?\s*([\s\S]*?)```/g;
+  let match;
+  
+  while ((match = codeBlockRegex.exec(text)) !== null) {
+    const content = match[1].trim();
+    if (!content.startsWith('{')) continue;
+    
     try {
-      const parsed = JSON.parse(block);
-
-      // 检查是否为代码修改请求
+      const parsed = JSON.parse(content);
+      
       if (parsed.action === 'code_change' || (parsed.summary && parsed.files)) {
-        const request = parseCodeChangeJson(parsed);
-        if (request) {
-          logger.info('[CodeChange] Parsed code change request from JSON');
-          return request;
-        }
+        const files = Array.isArray(parsed.files) 
+          ? parsed.files.map(String)
+          : typeof parsed.files === 'string'
+            ? parsed.files.split(',').map((f: string) => f.trim()).filter(Boolean)
+            : [];
+        
+        if (files.length === 0) continue;
+        
+        return {
+          id: `code_change_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
+          branchName: (parsed.branchName || parsed.branch || `ai-change-${Date.now()}`) as string,
+          summary: parsed.summary as string,
+          changelog: parsed.changelog as string | undefined,
+          files,
+          docUrl: (parsed.docUrl || parsed.doc_url) as string | undefined,
+        };
       }
     } catch {
       // 忽略非 JSON 内容
+    }
+  }
+
+  // 如果没找到代码块，尝试直接提取 JSON
+  let startIdx = text.indexOf('{');
+  while (startIdx !== -1) {
+    const extracted = extractCompleteJson(text, startIdx);
+    if (extracted) {
+      try {
+        const parsed = JSON.parse(extracted);
+        
+        if (parsed.action === 'code_change' || (parsed.summary && parsed.files)) {
+          const files = Array.isArray(parsed.files) 
+            ? parsed.files.map(String)
+            : typeof parsed.files === 'string'
+              ? parsed.files.split(',').map((f: string) => f.trim()).filter(Boolean)
+              : [];
+          
+          if (files.length > 0) {
+            return {
+              id: `code_change_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
+              branchName: (parsed.branchName || parsed.branch || `ai-change-${Date.now()}`) as string,
+              summary: parsed.summary as string,
+              changelog: parsed.changelog as string | undefined,
+              files,
+              docUrl: (parsed.docUrl || parsed.doc_url) as string | undefined,
+            };
+          }
+        }
+      } catch {
+        // 忽略非 JSON 内容
+      }
+      startIdx = text.indexOf('{', startIdx + extracted.length);
+    } else {
+      startIdx = text.indexOf('{', startIdx + 1);
     }
   }
 
@@ -528,18 +491,18 @@ export async function chat(
   const { onPermission, onQuestion, onCodeChange } = callbacks;
 
   try {
-    const sdk = getClient();
     const sessionId = await getOrCreateSession(chatId);
+    const sdk = getClient();
+    const timeout = CONFIG.opencode.timeout || DEFAULT_TIMEOUT_MS;
 
     logger.info(`[OpenCode] Processing: ${prompt.substring(0, 50)}...`);
 
-    // 调用 AI（带超时控制）
-    const timeout = CONFIG.opencode.timeout || DEFAULT_TIMEOUT_MS;
+    // 调用 AI
     const result = await Promise.race([
       sdk.session.prompt({
         path: { id: sessionId },
         body: {
-          parts: [{ type: 'text', text: CODE_CHANGE_SYSTEM_PROMPT + '\n\n' + prompt }],
+          parts: [{ type: 'text', text: prompt }],
         },
       }),
       new Promise<never>((_, reject) =>
@@ -564,7 +527,6 @@ export async function chat(
     // 检查错误信息
     const { info, parts } = result.data;
     if (info?.error) {
-      // 权限相关错误，尝试获取 pending permission
       if (String(info.error.message || info.error.data?.message).includes('permission')) {
         const permResult = await checkPermissionRequest(sessionId, chatId, onPermission);
         if (permResult) return permResult;
@@ -581,13 +543,30 @@ export async function chat(
       return { type: 'response', data: 'AI 返回空内容' };
     }
 
+    // 检查 code_change 工具调用
+    const toolParts = parts.filter((p: ResponsePart) => 
+      p.type === 'tool' && p.tool === 'code_change' && p.state?.status === 'completed'
+    );
+    
+    if (toolParts.length > 0 && onCodeChange) {
+      const toolOutput = toolParts[0].state?.output;
+      if (toolOutput) {
+        // 从工具输出中解析 JSON
+        const codeChange = extractCodeChangeFromText(toolOutput);
+        if (codeChange) {
+          await onCodeChange(chatId, codeChange);
+          return { type: 'code_change', data: codeChange };
+        }
+      }
+    }
+
     // 提取文本内容
     const textContent = parts
-      .filter(p => p.type === 'text' && !p.ignored && p.text)
-      .map(p => p.text!)
+      .filter((p: ResponsePart) => p.type === 'text' && !p.ignored && p.text)
+      .map((p: ResponsePart) => p.text!)
       .join('\n\n');
 
-    // 检查代码修改请求
+    // 检查代码修改请求（从文本中解析）
     const codeChange = extractCodeChangeFromText(textContent);
     if (codeChange && onCodeChange) {
       await onCodeChange(chatId, codeChange);

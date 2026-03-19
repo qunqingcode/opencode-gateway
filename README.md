@@ -1,267 +1,321 @@
-# OpenCode Gateway v2.5
+# OpenCode Gateway
 
-> 基于 [OpenClaw](https://github.com/openclaw/openclaw) 架构设计思想演进的 **AI 智能体网关 (Agent Gateway) 与编排器**。
+> **飞书 AI 智能体网关** — 在飞书群里聊天，让 AI 帮你改代码、提 MR、管 Bug
 
-本项目是一个连接人类通讯工具（飞书、GitLab、禅道等）与底层大模型/AI Agent 的中心枢纽。它不仅负责消息的收发，还承担了**多租户会话隔离、工具调用 (Function Calling) 解析、并发队列控制、以及人机审批流 (Human-in-the-loop) 编排**的核心职责。
+## 🎯 这是什么？
 
-## 🚀 核心特性
+一个连接**飞书**和**OpenCode AI**的网关服务。
 
-- **插件化架构**：支持飞书、GitLab、禅道等多平台，基于 `IProvider` 接口设计，随时可横向扩展接入钉钉、企业微信、Slack、Jira 等。
-- **工业级可靠性**：
-  - **多租户 Session 隔离**：基于 `chatId` 的上下文隔离，群聊/私聊互不串线。
-  - **防乱序并发队列**：内置带防刷屏保护和智能锁释放的消息队列，保障高并发下的稳定交互。
-  - **Session 过期清理**：自动清理 1 小时未活动的会话，防止内存泄漏。
-  - **持久化日志追踪**：引入 `winston` 提供按天轮转的结构化文件日志 (`logs/`)。
-- **现代化的 AI Tool-Use 解析**：抛弃脆弱的纯文本正则匹配，通过 System Prompt 强制注入，实现了高鲁棒性的标准 JSON Schema 解析。
-- **人机协同审批流 (HITL)**：完美融合飞书交互式卡片，当 AI 试图提 MR 或执行高危命令时，将阻断执行并推送审批卡片，人类点击后自动恢复 AI 的后台处理。
+**核心功能**：
+- 在飞书群里发消息，AI 帮你修改代码
+- 代码修改后推送审批卡片，你确认后才执行
+- 支持 GitLab Merge Request 创建
+- 支持禅道 Bug/任务管理
+
+## 📐 架构
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                      OpenCode Gateway                           │
+│                                                                  │
+│   飞书消息 ──► 消息队列 ──► OpenCode AI ──► 审批流程            │
+│                                    │                             │
+│                                    ▼                             │
+│                            ┌─────────────┐                      │
+│                            │  推送卡片   │                      │
+│                            │ [创建 MR]   │                      │
+│                            │ [打回]      │                      │
+│                            └─────────────┘                      │
+│                                    │                             │
+│                            用户点击确认                          │
+│                                    │                             │
+│                                    ▼                             │
+│                            GitLabProvider ──► GitLab API        │
+│                            ZentaoProvider ──► 禅道 API          │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
 
 ## 📂 项目结构
 
 ```
 opencode-gateway/
-├── index.ts                    # 主入口：启动服务 + Provider 注册
-├── start.bat / start.ps1       # 一键启动脚本
-├── tsconfig.json
+├── index.ts                    # 主入口
+├── start.bat                   # Windows 启动脚本
+├── start.ps1                   # PowerShell 启动脚本
 ├── package.json
-├── .env.example
+├── tsconfig.json
+├── .env.example                # 环境变量示例
 │
-└── src/
-    ├── config.ts               # 环境配置管理
-    │
-    ├── core/                   # 核心引擎层
-    │   ├── types.ts            # 类型定义
-    │   ├── provider.ts         # Provider 接口 + 基类
-    │   ├── registry.ts         # Provider 注册中心 + 生命周期管理
-    │   ├── context.ts          # Provider 引用管理
-    │   ├── request-registry.ts # 请求映射（卡片交互上下文）
-    │   ├── queue.ts            # 消息队列引擎
-    │   └── index.ts            # 统一导出
-    │
-    ├── providers/              # 平台适配器
-    │   ├── feishu/             # 飞书
-    │   │   ├── index.ts        # Provider 实现
-    │   │   ├── receive.ts      # 消息接收
-    │   │   ├── send.ts         # 消息发送
-    │   │   └── card/           # 卡片交互
-    │   │       ├── action-handler.ts
-    │   │       ├── card-builder.ts
-    │   │       └── card-interaction.ts
-    │   ├── gitlab/             # GitLab
-    │   ├── zentao/             # 禅道
-    │   └── opencode/           # OpenCode AI
-    │
-    ├── orchestrator/           # 流程编排
-    │   └── index.ts            # 消息处理 + 卡片交互编排
-    │
-    └── utils/
-        ├── logger.ts           # Winston 日志系统
-        └── file.ts             # 文件路径处理
+├── src/
+│   ├── config.ts               # 配置管理
+│   │
+│   ├── core/                   # 核心引擎
+│   │   ├── types.ts            # 类型定义
+│   │   ├── provider.ts         # Provider 接口 + 基类
+│   │   ├── registry.ts         # Provider 注册中心
+│   │   ├── context.ts          # 上下文管理
+│   │   ├── queue.ts            # 消息队列
+│   │   ├── request-registry.ts # 请求映射
+│   │   └── index.ts            # 统一导出
+│   │
+│   ├── providers/              # 平台适配器
+│   │   ├── feishu/             # 飞书 Provider
+│   │   │   ├── index.ts        #   主实现
+│   │   │   ├── receive.ts      #   消息接收
+│   │   │   ├── send.ts         #   消息发送
+│   │   │   └── card/           #   卡片模块
+│   │   │       ├── index.ts           # 卡片构建
+│   │   │       ├── action-handler.ts  # 卡片交互处理
+│   │   │       ├── card-builder.ts    # 卡片构建器
+│   │   │       └── card-interaction.ts# 卡片交互协议
+│   │   │
+│   │   ├── opencode/           # OpenCode AI Provider
+│   │   │   └── index.ts        #   AI 会话管理
+│   │   │
+│   │   ├── gitlab/             # GitLab Provider
+│   │   │   └── index.ts        #   MR 创建
+│   │   │
+│   │   └── zentao/             # 禅道 Provider
+│   │       └── index.ts        #   Bug/任务管理
+│   │
+│   ├── orchestrator/           # 流程编排
+│   │   └── index.ts            # 消息处理 + 卡片交互
+│   │
+│   └── utils/                  # 工具函数
+│       ├── logger.ts           # 日志系统
+│       ├── file.ts             # 文件处理
+│       ├── http-client.ts      # HTTP 客户端
+│       └── index.ts            # 统一导出
+│
+├── .opencode/
+│   └── tools/
+│       └── code_change.ts      # AI 代码修改确认工具
+│
+└── logs/                       # 日志目录（自动生成）
 ```
 
-## 🏗️ 架构设计
+## 🚀 快速开始
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                         index.ts (启动入口)                      │
-│   - Provider 注册                                               │
-│   - 初始化 ProviderManager                                      │
-│   - 调用 setupOrchestrator()                                    │
-└─────────────────────────────────────────────────────────────────┘
-                                │
-                                ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                      orchestrator (流程编排)                     │
-│   - createMessageHandler(): 用户消息 → AI → 回复/卡片            │
-│   - createCardHandler(): 卡片交互 → 回调 → 继续 AI               │
-└─────────────────────────────────────────────────────────────────┘
-                                │
-          ┌─────────────────────┼─────────────────────┐
-          ▼                     ▼                     ▼
-┌─────────────────┐   ┌─────────────────┐   ┌─────────────────┐
-│  core/queue.ts  │   │ providers/opencode│   │  providers/feishu│
-│   消息队列引擎   │   │    AI SDK 封装    │   │    飞书适配器    │
-└─────────────────┘   └─────────────────┘   └─────────────────┘
+### 1. 安装
+
+```bash
+npm install
 ```
 
-### 核心模块职责
+### 2. 配置
 
-| 模块 | 职责 |
-|------|------|
-| `core/types.ts` | 所有模块共用的类型定义 |
-| `core/provider.ts` | Provider 接口定义 + BaseProvider 基类 |
-| `core/registry.ts` | Provider 注册、创建、生命周期管理 |
-| `core/context.ts` | 跨模块的 Provider 引用管理 |
-| `core/request-registry.ts` | 卡片交互时的请求上下文映射 |
-| `core/queue.ts` | 按 chatId 隔离的消息队列 |
-| `orchestrator/` | 业务流程编排（消息处理、卡片交互） |
-| `providers/opencode/` | OpenCode AI SDK 封装 |
-| `providers/feishu/` | 飞书消息收发 + 卡片交互 |
-| `providers/gitlab/` | GitLab MR 创建 |
-| `providers/zentao/` | 禅道 Bug/Task 管理 |
+复制 `.env.example` 为 `.env`：
 
-## ⚡ 快速开始
+```bash
+cp .env.example .env
+```
 
-### 1. 配置环境变量
-
-将 `.env.example` 复制为 `.env`，填入真实配置：
+编辑 `.env`，填入你的配置：
 
 ```ini
-# 飞书应用凭证
-FEISHU_APP_ID=cli_a92xxxxx
-FEISHU_APP_SECRET=qzaUgxxxxx
+# ========== 飞书配置（必需）==========
+FEISHU_APP_ID=cli_xxxxxxxxxxxx
+FEISHU_APP_SECRET=xxxxxxxxxxxxxxxxxxxx
 
-# OpenCode 服务地址
+# ========== OpenCode AI 配置（必需）==========
 OPENCODE_API_URL=http://127.0.0.1:4096
-
-# OpenCode 模型配置
 OPENCODE_MODEL_ID=glm-4.7
 OPENCODE_PROVIDER_ID=venus-coding-ai
 
-# GitLab 配置（可选，用于自动创建 MR）
-GITLAB_URL=https://gitlab.example.com/api/v4
-GITLAB_TOKEN=glpat-xxxxx
+# ========== GitLab 配置（可选）==========
+GITLAB_API_URL=https://gitlab.example.com/api/v4
+GITLAB_TOKEN=glpat-xxxxxxxx
 GITLAB_PROJECT_ID=123
+
+# ========== 禅道配置（可选）==========
+ZENTAO_BASE_URL=https://zentao.example.com/api.php/v1
+ZENTAO_ACCOUNT=your-username
+ZENTAO_PASSWORD=your-password
+ZENTAO_PROJECT_ID=1
 ```
 
-### 2. 启动服务
+### 3. 启动
 
-**Windows:**
-```powershell
+```bash
+# 编译
+npm run build
+
+# 启动
+npm start
+
+# 或 Windows 一键启动
 .\start.bat
 ```
 
-**macOS / Linux:**
-```bash
-npm install
-npm run build
-npm start
-```
+### 4. 验证
 
-## 🛠️ 核心工作流
-
-### 自动化代码修改流程
+启动成功后看到：
 
 ```
-用户消息: "帮我修复这个 Bug"
-        │
-        ▼
-┌───────────────────┐
-│   飞书接收消息     │
-│   → enqueueMessage│
-└───────────────────┘
-        │
-        ▼
-┌───────────────────┐
-│   消息队列处理     │
-│   → createMessageHandler
-└───────────────────┘
-        │
-        ▼
-┌───────────────────┐
-│   调用 OpenCode AI │
-│   → chat(prompt)  │
-└───────────────────┘
-        │
-        ├─ 权限请求 → 推送审批卡片
-        ├─ 问题请求 → 推送选择卡片
-        └─ 代码修改 → 推送 MR 确认卡片
-        │
-        ▼
-┌───────────────────┐
-│   用户点击卡片     │
-│   → createCardHandler
-└───────────────────┘
-        │
-        ▼
-┌───────────────────┐
-│   执行操作         │
-│   → 创建 MR / 回复 │
-└───────────────────┘
+========================================
+  OpenCode Gateway v2.6
+  飞书 AI 智能体网关
+========================================
+  Providers: 4
+  OpenCode: http://127.0.0.1:4096
+========================================
+  [OK] feishu: Client initialized
+  [OK] gitlab: Connection successful
+  [OK] zentao: Connection successful
+  [OK] opencode: SDK initialized
 ```
 
-### 人机审批流 (HITL)
+## 📖 使用指南
 
-当 AI 试图执行敏感操作时：
+### 基本用法
 
-1. **阻断**：AI 触发 `PermissionRequest`，进入等待状态
-2. **确认**：Gateway 推送权限确认卡片到飞书
-3. **恢复**：用户点击"允许"，Gateway 调用 `continueAfterReply()` 恢复 AI 处理
+在飞书群里：
 
-## 📚 扩展开发指南
+```
+你: @机器人 帮我修复登录页面的 Bug
 
-### 新增 IM 平台（如企业微信）
+机器人: 我来分析一下...
+        
+        [权限请求] 需要访问 /src/auth/
+        [允许] [拒绝]
 
-1. 在 `src/providers/` 下新建目录 `wecom/`
+你: 点击 [允许]
 
-2. 实现 `IMessengerProvider` 接口：
+机器人: 已修改以下文件：
+        - src/auth/login.ts
+        
+        [✅ 创建 MR]  [❌ 打回]
 
-```typescript
-// src/providers/wecom/index.ts
-import { BaseProvider, IMessengerProvider, MessageEvent } from '../../core';
+你: 点击 [创建 MR]
 
-export class WeComProvider extends BaseProvider implements IMessengerProvider {
-  readonly type = 'messenger';
-  readonly capabilities = ['messaging', 'notification'];
-
-  async sendText(chatId: string, text: string) {
-    // 实现企微消息发送
-  }
-
-  onMessage(handler: (event: MessageEvent) => Promise<void>) {
-    // 注册消息处理器
-  }
-}
+机器人: ✅ MR 创建成功
+        https://gitlab.com/.../merge_requests/45
 ```
 
-3. 在 `index.ts` 注册：
+### 审批流程
 
-```typescript
-import { registerProvider } from './src/core';
-import { createWeComProvider, WeComConfig } from './src/providers/wecom';
-
-registerProvider(
-  'wecom',
-  (config, log) => createWeComProvider(config as WeComConfig, log),
-  'messenger',
-  ['messaging', 'notification']
-);
+```
+1. 用户发消息
+       │
+       ▼
+2. AI 分析并修改代码
+       │
+       ▼
+3. 返回 Code Change Request
+       │
+       ▼
+4. Gateway 推送审批卡片
+       │
+       ▼
+5. 用户点击 [创建 MR] 或 [打回]
+       │
+       ├─ [创建 MR] → GitLabProvider.createMR() → 返回 MR 链接
+       │
+       └─ [打回] → 返回打回提示
 ```
 
-### 新增代码仓库平台（如 GitHub）
+## 🔧 核心概念
 
-实现 `IRepositoryProvider` 接口，提供 `createMergeRequest()` 等方法。
+### Provider
 
-### 自定义流程编排
+Provider 是 Gateway 内部的平台适配器，封装不同平台的 API：
 
-修改 `src/orchestrator/index.ts` 中的 `createMessageHandler()` 自定义消息处理逻辑。
+| Provider | 职责 | 触发时机 |
+|----------|------|----------|
+| **FeishuProvider** | 消息收发、卡片推送 | 接收用户消息、推送审批卡片 |
+| **OpenCodeProvider** | AI 会话管理 | 处理消息时调用 AI |
+| **GitLabProvider** | 创建 Merge Request | 用户点击 [创建 MR] |
+| **ZentaoProvider** | 创建 Bug/任务 | 未来扩展 |
 
-## 📝 日志与排错
+### 消息队列
 
-- 控制台输出带时间戳和色彩的直观日志
-- 日志自动持久化到 `logs/` 目录
-- `application-*.log` 全量日志，`error-*.log` 错误日志
-- 按天自动切割
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                         消息队列                                 │
+│                                                                  │
+│   特性：                                                         │
+│   - 按 chatId 隔离（群聊/私聊独立）                             │
+│   - 防乱序（同一会话串行处理）                                   │
+│   - 防刷屏（队列最大 100 条）                                    │
+│   - 自动清理（空队列删除）                                       │
+│                                                                  │
+│   src/core/queue.ts                                              │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Session 管理
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        Session 管理                              │
+│                                                                  │
+│   特性：                                                         │
+│   - 按 chatId 隔离 AI 会话                                      │
+│   - 自动过期（1 小时无活动）                                     │
+│   - 上下文保持（同一会话共享）                                   │
+│                                                                  │
+│   src/providers/opencode/index.ts                                │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+## 📝 配置详解
+
+### 飞书配置
+
+| 变量 | 说明 | 必需 | 默认值 |
+|------|------|------|--------|
+| `FEISHU_APP_ID` | 飞书应用 ID | ✅ | - |
+| `FEISHU_APP_SECRET` | 飞书应用密钥 | ✅ | - |
+| `FEISHU_CONNECTION_MODE` | 连接模式 | | `websocket` |
+| `FEISHU_DOMAIN` | 域名（feishu/lark） | | `feishu` |
+
+### OpenCode 配置
+
+| 变量 | 说明 | 必需 | 默认值 |
+|------|------|------|--------|
+| `OPENCODE_API_URL` | OpenCode 服务地址 | ✅ | - |
+| `OPENCODE_MODEL_ID` | 模型 ID | | - |
+| `OPENCODE_PROVIDER_ID` | 提供商 ID | | - |
+| `OPENCODE_TIMEOUT` | 请求超时（毫秒） | | `600000` |
+
+### GitLab 配置
+
+| 变量 | 说明 | 必需 |
+|------|------|------|
+| `GITLAB_API_URL` | GitLab API 地址 | ✅ |
+| `GITLAB_TOKEN` | 访问令牌（需 `api` 权限） | ✅ |
+| `GITLAB_PROJECT_ID` | 项目 ID | ✅ |
+
+### 禅道配置
+
+| 变量 | 说明 |
+|------|------|
+| `ZENTAO_BASE_URL` | 禅道 API 地址（如 `https://zentao/api.php/v1`） |
+| `ZENTAO_TOKEN` | API Token（二选一） |
+| `ZENTAO_ACCOUNT` + `ZENTAO_PASSWORD` | 账号密码（二选一） |
+| `ZENTAO_PROJECT_ID` | 项目 ID |
 
 ## 🔧 常见问题
 
-### Q: GitLab 连接失败 "self-signed certificate"
+### Q: 飞书连接失败
 
-修改 `src/providers/gitlab/index.ts`，添加 `rejectUnauthorized: false`。
+1. 检查 `FEISHU_APP_ID` 和 `FEISHU_APP_SECRET` 是否正确
+2. 确认飞书应用已启用机器人能力
+3. 检查 IP 白名单设置
 
-### Q: Token 权限不足 403
+### Q: GitLab 创建 MR 失败
 
-确保 GitLab Token 有 `api` 权限，而非仅 `read_api`。
+1. 检查 `GITLAB_API_URL` 是否正确（注意 `/api/v4` 路径）
+2. Token 是否有 `api` 权限
+3. 项目 ID 是否正确
+
+### Q: 禅道连接失败
+
+1. 确认 API 地址格式：`https://your-zentao/api.php/v1`
+2. 开源版需要 16.5+ 才支持 RESTful API
+3. 检查账号是否有 API 访问权限
 
 ### Q: Session 过期
 
-Session 默认 1 小时过期，可在 `src/providers/opencode/index.ts` 修改 `SESSION_TTL_MS`。
-
-## 参考
-
-- 架构灵感来源: [OpenClaw](https://github.com/openclaw/openclaw)
-- [Feishu Open Platform](https://open.feishu.cn/document/)
-- [OpenCode SDK](https://www.npmjs.com/package/@opencode-ai/sdk)
-
-## License
-
-MIT
+Session 默认 1 小时过期，可在 `src/providers/openco

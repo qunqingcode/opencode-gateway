@@ -1,8 +1,9 @@
 /**
  * GitLab Provider 实现
+ * 
+ * 使用通用 HTTP 客户端
  */
 
-import * as https from 'https';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import {
@@ -14,6 +15,7 @@ import {
   Branch,
   Logger,
 } from '../../core';
+import { createHttpClient, HttpClient } from '../../utils/http-client';
 
 const execAsync = promisify(exec);
 
@@ -75,6 +77,7 @@ export class GitLabProvider extends BaseProvider implements IRepositoryProvider 
   readonly capabilities: ProviderCapability[] = ['repository'];
 
   readonly config: GitLabConfig;
+  private client: HttpClient;
 
   constructor(config: GitLabConfig, logger: Logger) {
     super();
@@ -82,6 +85,15 @@ export class GitLabProvider extends BaseProvider implements IRepositoryProvider 
     this.id = config.id;
     this.name = config.name || 'GitLab';
     this.logger = logger;
+
+    // 初始化 HTTP 客户端
+    this.client = createHttpClient({
+      baseUrl: config.apiUrl,
+      token: config.token,
+      tokenLocation: 'private-token',
+      timeout: 10000,
+      allowSelfSignedCert: true,
+    });
   }
 
   async start(): Promise<{ stop: () => void }> {
@@ -96,7 +108,7 @@ export class GitLabProvider extends BaseProvider implements IRepositoryProvider 
 
   async healthCheck(): Promise<{ healthy: boolean; message: string; details?: Record<string, unknown> }> {
     try {
-      const result = await this.request<GitLabUser>('GET', '/user');
+      const result = await this.client.get<GitLabUser>('/user');
       return {
         healthy: true,
         message: 'Connection successful',
@@ -117,7 +129,9 @@ export class GitLabProvider extends BaseProvider implements IRepositoryProvider 
   // ============================================================
 
   async getBranches(): Promise<Branch[]> {
-    const result = await this.request<GitLabBranchResponse[]>('GET', `/projects/${this.config.projectId}/repository/branches`);
+    const result = await this.client.get<GitLabBranchResponse[]>(
+      `/projects/${this.config.projectId}/repository/branches`
+    );
     return result.map(b => ({
       name: b.name,
       protected: b.protected,
@@ -133,10 +147,10 @@ export class GitLabProvider extends BaseProvider implements IRepositoryProvider 
   }
 
   async createBranch(name: string, ref: string = 'main'): Promise<Branch> {
-    const result = await this.request<GitLabBranchResponse>('POST', `/projects/${this.config.projectId}/repository/branches`, {
-      branch: name,
-      ref,
-    });
+    const result = await this.client.post<GitLabBranchResponse>(
+      `/projects/${this.config.projectId}/repository/branches`,
+      { branch: name, ref }
+    );
     return {
       name: result.name,
       protected: result.protected,
@@ -160,20 +174,29 @@ export class GitLabProvider extends BaseProvider implements IRepositoryProvider 
   // ============================================================
 
   async getMergeRequests(state?: 'open' | 'merged' | 'closed'): Promise<MergeRequest[]> {
-    const params = new URLSearchParams();
-    if (state) params.set('state', state === 'open' ? 'opened' : state);
+    const params: Record<string, string> = {};
+    if (state) {
+      params.state = state === 'open' ? 'opened' : state;
+    }
 
-    const result = await this.request<GitLabMergeRequestResponse[]>('GET', `/projects/${this.config.projectId}/merge_requests?${params}`);
+    const result = await this.client.get<GitLabMergeRequestResponse[]>(
+      `/projects/${this.config.projectId}/merge_requests`,
+      Object.keys(params).length > 0 ? params : undefined
+    );
+
     return result.map(mr => this.mapMergeRequest(mr));
   }
 
   async createMergeRequest(sourceBranch: string, targetBranch: string, title: string): Promise<MergeRequest> {
-    const result = await this.request<GitLabMergeRequestResponse>('POST', `/projects/${this.config.projectId}/merge_requests`, {
-      source_branch: sourceBranch,
-      target_branch: targetBranch,
-      title,
-      remove_source_branch: true,
-    });
+    const result = await this.client.post<GitLabMergeRequestResponse>(
+      `/projects/${this.config.projectId}/merge_requests`,
+      {
+        source_branch: sourceBranch,
+        target_branch: targetBranch,
+        title,
+        remove_source_branch: true,
+      }
+    );
 
     this.recordActivity();
     this.logger?.info(`[${this.id}] Created MR: ${result.web_url}`);
@@ -182,16 +205,19 @@ export class GitLabProvider extends BaseProvider implements IRepositoryProvider 
   }
 
   async mergeMergeRequest(mrId: number): Promise<MergeRequest> {
-    const result = await this.request<GitLabMergeRequestResponse>('PUT', `/projects/${this.config.projectId}/merge_requests/${mrId}/merge`);
+    const result = await this.client.put<GitLabMergeRequestResponse>(
+      `/projects/${this.config.projectId}/merge_requests/${mrId}/merge`
+    );
     this.recordActivity();
 
     return this.mapMergeRequest(result);
   }
 
   async closeMergeRequest(mrId: number): Promise<void> {
-    await this.request('PUT', `/projects/${this.config.projectId}/merge_requests/${mrId}`, {
-      state_event: 'close',
-    });
+    await this.client.put(
+      `/projects/${this.config.projectId}/merge_requests/${mrId}`,
+      { state_event: 'close' }
+    );
     this.recordActivity();
   }
 
@@ -203,8 +229,6 @@ export class GitLabProvider extends BaseProvider implements IRepositoryProvider 
    * 映射 GitLab MR 响应到 MergeRequest 类型
    */
   private mapMergeRequest(mr: GitLabMergeRequestResponse): MergeRequest {
-    // GitLab state: opened, merged, closed, locked
-    // Our status: open, merged, closed
     let status: MergeRequest['status'] = 'open';
     if (mr.state === 'merged') status = 'merged';
     else if (mr.state === 'closed') status = 'closed';
@@ -220,56 +244,6 @@ export class GitLabProvider extends BaseProvider implements IRepositoryProvider 
       author: mr.author?.username,
       createdAt: mr.created_at,
     };
-  }
-
-  private async request<T = unknown>(method: string, path: string, body?: unknown): Promise<T> {
-    return new Promise((resolve, reject) => {
-      const url = new URL(`${this.config.apiUrl}${path}`);
-      const postData = body ? JSON.stringify(body) : undefined;
-      
-      // 5 秒超时，快速失败
-      const timeout = 5000;
-
-      const req = https.request(
-        {
-          hostname: url.hostname,
-          port: url.port || 443,
-          path: url.pathname + url.search,
-          method,
-          headers: {
-            'PRIVATE-TOKEN': this.config.token,
-            'Content-Type': 'application/json',
-            ...(postData ? { 'Content-Length': Buffer.byteLength(postData) } : {}),
-          },
-          timeout,
-          rejectUnauthorized: false,  // 允许自签名证书
-        },
-        res => {
-          let data = '';
-          res.on('data', chunk => (data += chunk));
-          res.on('end', () => {
-            try {
-              const result = JSON.parse(data);
-              if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
-                resolve(result);
-              } else {
-                reject(new Error(result.message || `HTTP ${res.statusCode}`));
-              }
-            } catch {
-              reject(new Error(`Failed to parse response: ${data}`));
-            }
-          });
-        }
-      );
-
-      req.on('error', reject);
-      req.on('timeout', () => {
-        req.destroy();
-        reject(new Error(`Request timeout after ${timeout}ms`));
-      });
-      if (postData) req.write(postData);
-      req.end();
-    });
   }
 }
 

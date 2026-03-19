@@ -74,10 +74,13 @@ function buildProviderConfigs(): Record<string, ProviderConfig> {
     } as ProviderConfig & Record<string, unknown>;
   }
 
-  // 禅道配置（预留）
-  const zentaoToken = getEnvString('ZENTAO_TOKEN');
+  // 禅道配置
   const zentaoBaseUrl = getEnvString('ZENTAO_BASE_URL');
-  if (zentaoToken && zentaoBaseUrl) {
+  const zentaoToken = getEnvString('ZENTAO_TOKEN');
+  const zentaoAccount = getEnvString('ZENTAO_ACCOUNT');
+  const zentaoPassword = getEnvString('ZENTAO_PASSWORD');
+
+  if (zentaoBaseUrl && (zentaoToken || (zentaoAccount && zentaoPassword))) {
     providers['zentao'] = {
       id: 'zentao',
       type: 'issue',
@@ -86,6 +89,8 @@ function buildProviderConfigs(): Record<string, ProviderConfig> {
       capabilities: ['issues', 'project'],
       baseUrl: zentaoBaseUrl,
       token: zentaoToken,
+      account: zentaoAccount,
+      password: zentaoPassword,
       projectId: getEnvString('ZENTAO_PROJECT_ID'),
     } as ProviderConfig & Record<string, unknown>;
   }

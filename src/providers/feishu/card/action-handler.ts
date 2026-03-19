@@ -40,7 +40,7 @@ export interface ContinueResult {
 
 /** 卡片动作处理器结果 */
 export interface CardActionResult {
-  toast?: { type: 'success' | 'error' | 'info'; content: string };
+  toast?: { type: 'success' | 'error' | 'info' | 'warning'; content: string };
   card?: unknown;
 }
 
@@ -225,7 +225,16 @@ async function handleCodeChangeAction(
 
   if (actionType === 'create_mr') {
     if (!callbacks.createMR) {
-      return { toast: { type: 'error', content: 'GitLab 未配置' } };
+      // GitLab 未配置，返回提示卡片
+      return {
+        toast: { type: 'warning', content: 'GitLab 未配置' },
+        card: createStatusCard({
+          title: '⚠️ GitLab 未配置',
+          status: 'warning',
+          message: '无法自动创建 MR',
+          details: `请配置 GitLab 后重试，或手动创建 MR。\n\n分支: \`${branchName}\``,
+        }),
+      };
     }
 
     try {

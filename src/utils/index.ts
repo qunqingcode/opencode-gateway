@@ -10,3 +10,11 @@ export {
   getFileInfo,
   ensureDirectory,
 } from './file';
+
+export {
+  HttpClient,
+  createHttpClient,
+  type HttpClientConfig,
+  type HttpResponse,
+  type HttpError,
+} from './http-client';

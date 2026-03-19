@@ -5,12 +5,15 @@
  */
 
 import * as Lark from '@larksuiteoapi/node-sdk';
-import { IRepositoryProvider } from './provider';
+import { IRepositoryProvider, IIssueProvider } from './provider';
 import { ProviderManager } from './registry';
 
 export class GatewayContext {
   /** GitLab Provider (用于创建 MR) */
   private gitlabProvider: IRepositoryProvider | null = null;
+
+  /** 禅道 Provider (用于问题管理) */
+  private zentaoProvider: IIssueProvider | null = null;
 
   /** 飞书客户端 (用于文件上传) */
   private feishuClient: InstanceType<typeof Lark.Client> | null = null;
@@ -28,6 +31,18 @@ export class GatewayContext {
 
   getGitLabProvider(): IRepositoryProvider | null {
     return this.gitlabProvider;
+  }
+
+  // ============================================================
+  // 禅道 Provider
+  // ============================================================
+
+  setZentaoProvider(provider: IIssueProvider): void {
+    this.zentaoProvider = provider;
+  }
+
+  getZentaoProvider(): IIssueProvider | null {
+    return this.zentaoProvider;
   }
 
   // ============================================================

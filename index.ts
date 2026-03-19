@@ -2,6 +2,8 @@
  * OpenCode Gateway 主入口
  * 
  * 职责：启动服务 + 编排各模块
+ * 
+ * 使用场景：飞书聊天 → AI 处理 → 审批确认 → 执行操作
  */
 
 import { CONFIG, validateConfig, getEnabledProviders } from './src/config';
@@ -12,7 +14,7 @@ import {
   gatewayContext,
   enqueueMessage,
 } from './src/core';
-import { IMessengerProvider, IRepositoryProvider } from './src/core';
+import { IMessengerProvider, IRepositoryProvider, IIssueProvider } from './src/core';
 import { preInit } from './src/providers/opencode';
 import {
   FeishuProvider,
@@ -63,9 +65,8 @@ async function main() {
   validateConfig();
 
   logger.info('========================================');
-  logger.info('  OpenCode Gateway v2.5');
-  logger.info('  + 模块化架构');
-  logger.info('  + 流程编排分离');
+  logger.info('  OpenCode Gateway v2.6');
+  logger.info('  飞书 AI 智能体网关');
   logger.info('========================================');
 
   // 1. 初始化 OpenCode SDK
@@ -83,6 +84,7 @@ async function main() {
 
   let feishuProvider: IMessengerProvider | null = null;
   let gitlabProvider: IRepositoryProvider | null = null;
+  let zentaoProvider: IIssueProvider | null = null;
 
   for (const providerConfig of enabledProviders) {
     try {
@@ -106,6 +108,11 @@ async function main() {
       if (providerConfig.id === 'gitlab') {
         gitlabProvider = provider as IRepositoryProvider;
         gatewayContext.setGitLabProvider(gitlabProvider);
+      }
+
+      if (providerConfig.id === 'zentao') {
+        zentaoProvider = provider as IIssueProvider;
+        gatewayContext.setZentaoProvider(zentaoProvider);
       }
     } catch (error) {
       logger.error(`[Startup] Failed to init ${providerConfig.id}:`, (error as Error).message);

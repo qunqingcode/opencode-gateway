@@ -1,12 +1,11 @@
 /**
- * 禅道 Provider 实现（预留）
+ * 禅道 Provider 实现
  * 
- * 禅道 API 文档：https://www.zentao.net/book/zentaopmshelp/562.html
+ * 使用通用 HTTP 客户端
+ * 支持禅道开源版 18+ / 企业版 RESTful API
+ * 文档：https://www.zentao.net/book/api/1397.html
  */
 
-import * as https from 'https';
-import * as http from 'http';
-import { URL } from 'url';
 import {
   BaseProvider,
   IIssueProvider,
@@ -17,19 +16,20 @@ import {
   IssueCreateParams,
   Logger,
 } from '../../core';
+import { createHttpClient, HttpClient } from '../../utils/http-client';
 
 // ============================================================
 // 禅道配置
 // ============================================================
 
 export interface ZentaoConfig extends ProviderConfig {
-  /** 禅道地址 */
+  /** 禅道 API 地址，如 http://zentao/api.php/v1 */
   baseUrl: string;
-  /** API Token */
-  token: string;
-  /** 账号（可选，Token 模式不需要） */
+  /** API Token（可选，如果有直接使用） */
+  token?: string;
+  /** 账号（用于登录获取 Token） */
   account?: string;
-  /** 密码（可选，Token 模式不需要） */
+  /** 密码（用于登录获取 Token） */
   password?: string;
   /** 项目 ID */
   projectId?: string | number;
@@ -39,10 +39,8 @@ export interface ZentaoConfig extends ProviderConfig {
 // 禅道 API 响应类型
 // ============================================================
 
-interface ZentaoResponse<T = unknown> {
-  status: string;
-  data: T;
-  message?: string;
+interface ZentaoLoginResponse {
+  token: string;
 }
 
 interface ZentaoIssue {
@@ -68,8 +66,8 @@ export class ZentaoProvider extends BaseProvider implements IIssueProvider {
   readonly capabilities: ProviderCapability[] = ['issues', 'project'];
 
   readonly config: ZentaoConfig;
-
-  private session?: string;
+  private client: HttpClient;
+  private token: string | null = null;
 
   constructor(config: ZentaoConfig, logger: Logger) {
     super();
@@ -77,11 +75,24 @@ export class ZentaoProvider extends BaseProvider implements IIssueProvider {
     this.id = config.id;
     this.name = config.name || 'Zentao';
     this.logger = logger;
+
+    // 初始化 HTTP 客户端（先不设置 token，登录后再设置）
+    this.client = createHttpClient({
+      baseUrl: config.baseUrl,
+      timeout: 30000,
+      allowSelfSignedCert: true,
+    });
+
+    // 如果配置了 token，直接使用
+    if (config.token) {
+      this.token = config.token;
+      this.client.setToken(config.token);
+    }
   }
 
   async start(): Promise<{ stop: () => void }> {
-    // 尝试获取 session
-    if (this.config.account && this.config.password) {
+    // 如果没有 token，用账号密码登录获取
+    if (!this.token && this.config.account && this.config.password) {
       await this.login();
     }
 
@@ -96,13 +107,14 @@ export class ZentaoProvider extends BaseProvider implements IIssueProvider {
 
   async healthCheck(): Promise<{ healthy: boolean; message: string; details?: Record<string, unknown> }> {
     try {
-      // 获取当前用户信息验证连接
-      const result = await this.request<{ account?: string }>('GET', '/user');
+      // 尝试获取用户信息验证连接
+      const result = await this.client.get<{ id?: number; account?: string }>('/users/me');
       return {
         healthy: true,
         message: 'Connection successful',
         details: {
           user: result?.account ?? 'unknown',
+          token: this.token ? 'valid' : 'missing',
         },
       };
     } catch (error) {
@@ -118,26 +130,29 @@ export class ZentaoProvider extends BaseProvider implements IIssueProvider {
   // ============================================================
 
   async getIssues(query: IssueQuery): Promise<{ issues: Issue[]; total: number }> {
-    const params = new URLSearchParams();
-    if (query.projectId) params.set('projectID', String(query.projectId));
-    if (query.status) params.set('status', query.status);
-    if (query.assignee) params.set('assignedTo', query.assignee);
-    if (query.page) params.set('page', String(query.page));
-    if (query.pageSize) params.set('limit', String(query.pageSize));
+    const params: Record<string, string> = {};
+    if (query.projectId) params.project = String(query.projectId);
+    if (query.status) params.status = query.status;
+    if (query.assignee) params.assignedTo = query.assignee;
+    if (query.page) params.page = String(query.page);
+    if (query.pageSize) params.limit = String(query.pageSize);
 
-    const result = await this.request<ZentaoIssue[]>('GET', `/bugs?${params}`);
+    const result = await this.client.get<{ bugs?: ZentaoIssue[]; total?: number }>(
+      '/bugs',
+      Object.keys(params).length > 0 ? params : undefined
+    );
 
-    const issues = (result || []).map(this.mapIssue);
+    const issues = (result?.bugs || result as unknown as ZentaoIssue[] || []).map(this.mapIssue);
 
     return {
       issues,
-      total: issues.length, // 禅道 API 可能需要额外调用获取 total
+      total: result?.total ?? issues.length,
     };
   }
 
   async getIssue(issueId: string | number): Promise<Issue | null> {
     try {
-      const result = await this.request<ZentaoIssue>('GET', `/bugs/${issueId}`);
+      const result = await this.client.get<ZentaoIssue>(`/bugs/${issueId}`);
       return this.mapIssue(result);
     } catch {
       return null;
@@ -145,7 +160,7 @@ export class ZentaoProvider extends BaseProvider implements IIssueProvider {
   }
 
   async createIssue(params: IssueCreateParams): Promise<Issue> {
-    const result = await this.request<ZentaoIssue>('POST', '/bugs', {
+    const result = await this.client.post<ZentaoIssue>('/bugs', {
       title: params.title,
       steps: params.description,
       pri: this.mapPriority(params.priority),
@@ -161,7 +176,7 @@ export class ZentaoProvider extends BaseProvider implements IIssueProvider {
   }
 
   async updateIssue(issueId: string | number, params: Partial<IssueCreateParams>): Promise<Issue> {
-    const result = await this.request<ZentaoIssue>('PUT', `/bugs/${issueId}`, {
+    const result = await this.client.put<ZentaoIssue>(`/bugs/${issueId}`, {
       title: params.title,
       steps: params.description,
       pri: params.priority ? this.mapPriority(params.priority) : undefined,
@@ -173,16 +188,12 @@ export class ZentaoProvider extends BaseProvider implements IIssueProvider {
   }
 
   async closeIssue(issueId: string | number): Promise<void> {
-    await this.request('PUT', `/bugs/${issueId}`, {
-      status: 'closed',
-    });
+    await this.client.put(`/bugs/${issueId}/close`);
     this.recordActivity();
   }
 
   async addComment(issueId: string | number, content: string): Promise<void> {
-    await this.request('POST', `/bugs/${issueId}/comments`, {
-      content,
-    });
+    await this.client.post(`/bugs/${issueId}/comments`, { content });
     this.recordActivity();
   }
 
@@ -190,84 +201,36 @@ export class ZentaoProvider extends BaseProvider implements IIssueProvider {
   // 内部方法
   // ============================================================
 
+  /**
+   * 登录获取 Token
+   * API: POST /tokens
+   */
   private async login(): Promise<void> {
     if (!this.config.account || !this.config.password) return;
-    
+
     try {
-      const result = await this.request<{ session?: string }>('POST', '/user-login.json', {
-        account: this.config.account,
-        password: this.config.password,
+      // 禅道登录需要特殊处理，不使用 Token
+      const response = await fetch(`${this.config.baseUrl.replace(/\/+$/, '')}/tokens`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          account: this.config.account,
+          password: this.config.password,
+        }),
       });
-      this.session = result.session;
-      this.logger?.info(`[${this.id}] Login successful`);
+
+      if (!response.ok) {
+        throw new Error(`Login failed: HTTP ${response.status}`);
+      }
+
+      const result = await response.json() as ZentaoLoginResponse;
+      this.token = result.token;
+      this.client.setToken(result.token);
+      this.logger?.info(`[${this.id}] Login successful, token obtained`);
     } catch (error) {
       this.logger?.error(`[${this.id}] Login failed: ${(error as Error).message}`);
+      throw error;
     }
-  }
-
-  private async request<T = unknown>(method: string, path: string, body?: unknown): Promise<T> {
-    return new Promise((resolve, reject) => {
-      const baseUrl = this.config.baseUrl.replace(/\/+$/, '');
-      const url = new URL(`${baseUrl}${path}`);
-      const httpModule = url.protocol === 'https:' ? https : http;
-      const postData = body ? JSON.stringify(body) : undefined;
-
-      const headers: Record<string, string | number> = {
-        'Content-Type': 'application/json',
-      };
-
-      // Token 认证
-      if (this.config.token) {
-        headers['Token'] = this.config.token;
-      }
-
-      // Session 认证
-      if (this.session) {
-        headers['Cookie'] = `zentaosid=${this.session}`;
-      }
-
-      if (postData) {
-        headers['Content-Length'] = Buffer.byteLength(postData);
-      }
-
-      const req = httpModule.request(
-        {
-          hostname: url.hostname,
-          port: url.port || (url.protocol === 'https:' ? 443 : 80),
-          path: url.pathname + url.search,
-          method,
-          headers,
-        },
-        (res) => {
-          let data = '';
-          res.on('data', (chunk) => (data += chunk));
-          res.on('end', () => {
-            try {
-              const result = JSON.parse(data);
-              if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
-                resolve(result as T);
-              } else {
-                reject(new Error(result.message || result.error || `HTTP ${res.statusCode}`));
-              }
-            } catch {
-              reject(new Error(`Failed to parse response: ${data.substring(0, 100)}`));
-            }
-          });
-        }
-      );
-
-      req.on('error', (err) => {
-        reject(new Error(`Request failed: ${err.message}`));
-      });
-
-      req.setTimeout(30000, () => {
-        req.destroy();
-        reject(new Error('Request timeout'));
-      });
-
-      if (postData) req.write(postData);
-      req.end();
-    });
   }
 
   private mapIssue(zentao: ZentaoIssue): Issue {
