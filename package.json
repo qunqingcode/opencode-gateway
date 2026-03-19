@@ -15,7 +15,6 @@
   },
   "dependencies": {
     "@larksuiteoapi/node-sdk": "^1.26.0",
-    "@opencode-ai/plugin": "^1.2.27",
     "@opencode-ai/sdk": "^1.2.25",
     "dotenv": "^17.3.1",
     "winston": "^3.19.0",

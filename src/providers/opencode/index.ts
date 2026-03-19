@@ -543,23 +543,6 @@ export async function chat(
       return { type: 'response', data: 'AI 返回空内容' };
     }
 
-    // 检查 code_change 工具调用
-    const toolParts = parts.filter((p: ResponsePart) => 
-      p.type === 'tool' && p.tool === 'code_change' && p.state?.status === 'completed'
-    );
-    
-    if (toolParts.length > 0 && onCodeChange) {
-      const toolOutput = toolParts[0].state?.output;
-      if (toolOutput) {
-        // 从工具输出中解析 JSON
-        const codeChange = extractCodeChangeFromText(toolOutput);
-        if (codeChange) {
-          await onCodeChange(chatId, codeChange);
-          return { type: 'code_change', data: codeChange };
-        }
-      }
-    }
-
     // 提取文本内容
     const textContent = parts
       .filter((p: ResponsePart) => p.type === 'text' && !p.ignored && p.text)

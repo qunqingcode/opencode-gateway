@@ -491,3 +491,9 @@ export {
   type ContinueResult,
   type Logger as CardActionLogger,
 } from "./action-handler.js";
+
+// 飞书卡片构建器（实现 CardBuilder 接口）
+export {
+  FeishuCardBuilder as FeishuCardBuilderImpl,
+  getFeishuCardBuilder,
+} from "./card-builder-impl.js";

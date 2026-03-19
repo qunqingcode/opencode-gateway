@@ -15,25 +15,69 @@
 ## 📐 架构
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                      OpenCode Gateway                           │
-│                                                                  │
-│   飞书消息 ──► 消息队列 ──► OpenCode AI ──► 审批流程            │
-│                                    │                             │
-│                                    ▼                             │
-│                            ┌─────────────┐                      │
-│                            │  推送卡片   │                      │
-│                            │ [创建 MR]   │                      │
-│                            │ [打回]      │                      │
-│                            └─────────────┘                      │
-│                                    │                             │
-│                            用户点击确认                          │
-│                                    │                             │
-│                                    ▼                             │
-│                            GitLabProvider ──► GitLab API        │
-│                            ZentaoProvider ──► 禅道 API          │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                            OpenCode Gateway                                  │
+│                                                                              │
+│  ┌─────────────┐   ┌─────────────┐   ┌─────────────┐   ┌─────────────┐     │
+│  │  Runtime    │──►│   Domain    │──►│   Adapter   │──►│  External   │     │
+│  │  (运行时)    │   │  (领域层)   │   │  (适配器)   │   │  (外部系统)  │     │
+│  └─────────────┘   └─────────────┘   └─────────────┘   └─────────────┘     │
+│         │                 │                 │                               │
+│         ▼                 ▼                 ▼                               │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │                        Core (基础设施层)                              │   │
+│  │  类型定义 │ Provider 接口 │ 注册中心 │ 消息队列 │ 全局上下文          │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 分层职责
+
+| 层级 | 目录 | 职责 | 依赖方向 |
+|------|------|------|----------|
+| **Runtime** | `src/runtime/` | 应用启动、消息调度、流程编排 | 依赖 Commands |
+| **Commands** | `src/commands/` | 业务指令（权限、问题、代码修改） | 依赖 Core |
+| **Providers** | `src/providers/` | 平台适配（飞书、GitLab、OpenCode、禅道） | 依赖 Core |
+| **Core** | `src/core/` | 基础设施（类型、队列、注册中心） | 无依赖（底层） |
+
+### 数据流
+
+```
+用户消息
+    │
+    ▼
+┌─────────────┐
+│   Runtime   │ 消息队列、调度
+└─────────────┘
+    │
+    ▼
+┌─────────────┐
+│   Adapter   │ OpenCode AI 处理
+└─────────────┘
+    │
+    ▼
+┌─────────────┐
+│   Domain    │ 解析指令、构建卡片
+└─────────────┘
+    │
+    ▼
+┌─────────────┐
+│   Adapter   │ 飞书推送卡片
+└─────────────┘
+    │
+    ▼
+用户交互
+    │
+    ▼
+┌─────────────┐
+│   Domain    │ 处理交互（创建 MR 等）
+└─────────────┘
+    │
+    ▼
+┌─────────────┐
+│   Adapter   │ GitLab 创建 MR
+└─────────────┘
 ```
 
 ## 📂 项目结构
@@ -41,8 +85,6 @@
 ```
 opencode-gateway/
 ├── index.ts                    # 主入口
-├── start.bat                   # Windows 启动脚本
-├── start.ps1                   # PowerShell 启动脚本
 ├── package.json
 ├── tsconfig.json
 ├── .env.example                # 环境变量示例
@@ -50,49 +92,131 @@ opencode-gateway/
 ├── src/
 │   ├── config.ts               # 配置管理
 │   │
-│   ├── core/                   # 核心引擎
-│   │   ├── types.ts            # 类型定义
-│   │   ├── provider.ts         # Provider 接口 + 基类
-│   │   ├── registry.ts         # Provider 注册中心
-│   │   ├── context.ts          # 上下文管理
-│   │   ├── queue.ts            # 消息队列
-│   │   ├── request-registry.ts # 请求映射
-│   │   └── index.ts            # 统一导出
+│   ├── core/                   # 基础设施层
+│   │   ├── types.ts            #   类型定义
+│   │   ├── provider.ts         #   Provider 接口 + 基类
+│   │   ├── registry.ts         #   Provider 注册中心
+│   │   ├── context.ts          #   全局上下文
+│   │   ├── queue.ts            #   消息队列
+│   │   └── request-registry.ts #   请求映射
 │   │
-│   ├── providers/              # 平台适配器
-│   │   ├── feishu/             # 飞书 Provider
-│   │   │   ├── index.ts        #   主实现
-│   │   │   ├── receive.ts      #   消息接收
-│   │   │   ├── send.ts         #   消息发送
-│   │   │   └── card/           #   卡片模块
-│   │   │       ├── index.ts           # 卡片构建
-│   │   │       ├── action-handler.ts  # 卡片交互处理
-│   │   │       ├── card-builder.ts    # 卡片构建器
-│   │   │       └── card-interaction.ts# 卡片交互协议
+│   ├── providers/              # 适配器层
+│   │   ├── feishu/             #   飞书适配器
+│   │   │   ├── index.ts        #     主实现
+│   │   │   ├── receive.ts      #     消息接收
+│   │   │   ├── send.ts         #     消息发送
+│   │   │   └── card/           #     卡片模块
+│   │   │       ├── index.ts              # 卡片模板
+│   │   │       ├── card-builder.ts       # 卡片构建器
+│   │   │       ├── card-builder-impl.ts  # 飞书卡片实现
+│   │   │       └── card-interaction.ts   # 卡片交互协议
 │   │   │
-│   │   ├── opencode/           # OpenCode AI Provider
-│   │   │   └── index.ts        #   AI 会话管理
+│   │   ├── opencode/           #   OpenCode AI 适配器
+│   │   │   └── index.ts        #     AI 会话管理
 │   │   │
-│   │   ├── gitlab/             # GitLab Provider
-│   │   │   └── index.ts        #   MR 创建
+│   │   ├── gitlab/             #   GitLab 适配器
+│   │   │   └── index.ts        #     MR 创建
 │   │   │
-│   │   └── zentao/             # 禅道 Provider
-│   │       └── index.ts        #   Bug/任务管理
+│   │   └── zentao/             #   禅道适配器
+│   │       └── index.ts        #     Bug/任务管理
 │   │
-│   ├── orchestrator/           # 流程编排
-│   │   └── index.ts            # 消息处理 + 卡片交互
+│   ├── commands/               # 领域层
+│   │   ├── types.ts            #   领域类型定义
+│   │   ├── pipeline.ts         #   指令流水线
+│   │   ├── code-change/        #   代码修改指令
+│   │   │   └── index.ts
+│   │   ├── permission/         #   权限指令
+│   │   │   └── index.ts
+│   │   └── question/           #   问题指令
+│   │       └── index.ts
 │   │
-│   └── utils/                  # 工具函数
-│       ├── logger.ts           # 日志系统
-│       ├── file.ts             # 文件处理
-│       ├── http-client.ts      # HTTP 客户端
-│       └── index.ts            # 统一导出
-│
-├── .opencode/
-│   └── tools/
-│       └── code_change.ts      # AI 代码修改确认工具
+│   ├── runtime/                # 运行时层
+│   │   └── index.ts            #   应用启动和调度
+│   │
+│   ├── utils/                 # 工具模块
+│   │   ├── logger.ts           #   日志系统
+│   │   ├── file.ts             #   文件处理
+│   │   └── http-client.ts      #   HTTP 客户端
+│   │
+│   └── skills/                 # Skill 文档
+│       └── gateway-integration.md  # 研发项目对接指南
 │
 └── logs/                       # 日志目录（自动生成）
+```
+
+## 🏗️ 核心设计
+
+### 适配器模式（Adapter Pattern）
+
+适配器层封装外部平台 API，提供统一接口：
+
+```typescript
+// core/provider.ts
+interface IMessengerProvider {
+  sendText(chatId: string, text: string): Promise<void>;
+  sendCard?(chatId: string, card: unknown): Promise<void>;
+  onMessage(handler: MessageHandler): void;
+}
+
+interface IRepositoryProvider {
+  createMergeRequest(source: string, target: string, title: string): Promise<MR>;
+}
+```
+
+### 领域指令模式（Command Pattern）
+
+领域层定义业务指令的完整生命周期：
+
+```typescript
+// commands/types.ts
+interface CommandHandler<TPayload> {
+  readonly type: CommandType;
+  
+  // 1. 解析：从 AI 响应中提取指令
+  parse(text: string): Command<TPayload> | null;
+  
+  // 2. 卡片：构建审批卡片
+  buildCard(command: Command, context: CommandContext): Promise<unknown>;
+  
+  // 3. 交互：处理用户操作
+  handleInteraction(action: string, envelope: InteractionEnvelope): Promise<InteractionResult>;
+}
+```
+
+### 卡片构建抽象（CardBuilder）
+
+支持多平台卡片格式：
+
+```typescript
+// commands/types.ts
+interface CardBuilder {
+  buildPermissionCard(payload: PermissionPayload, context: CardContext): Promise<unknown>;
+  buildQuestionCard(payload: QuestionPayload, context: CardContext): Promise<unknown>;
+  buildCodeChangeCard(payload: CodeChangePayload, context: CardContext): Promise<unknown>;
+  buildStatusCard(payload: StatusPayload): Promise<unknown>;
+}
+```
+
+### 依赖注入（Dependency Injection）
+
+运行时层负责组装所有依赖：
+
+```typescript
+// runtime/index.ts
+function setupRuntime(messengerProvider, gitlabProvider) {
+  // 1. 创建卡片构建器
+  const cardBuilder = getFeishuCardBuilder();
+  
+  // 2. 构建服务依赖
+  const services: CommandServices = {
+    opencode: { replyPermission, replyQuestion, ... },
+    registry: { getChatId },
+    repository: gitlabProvider ? { createMergeRequest } : undefined,
+  };
+  
+  // 3. 初始化指令层
+  setupCommands(cardBuilder, services);
+}
 ```
 
 ## 🚀 快速开始
@@ -143,9 +267,6 @@ npm run build
 
 # 启动
 npm start
-
-# 或 Windows 一键启动
-.\start.bat
 ```
 
 ### 4. 验证
@@ -154,7 +275,7 @@ npm start
 
 ```
 ========================================
-  OpenCode Gateway v2.6
+  OpenCode Gateway v2.7
   飞书 AI 智能体网关
 ========================================
   Providers: 4
@@ -193,70 +314,80 @@ npm start
         https://gitlab.com/.../merge_requests/45
 ```
 
-### 审批流程
+### 研发项目对接
 
-```
-1. 用户发消息
-       │
-       ▼
-2. AI 分析并修改代码
-       │
-       ▼
-3. 返回 Code Change Request
-       │
-       ▼
-4. Gateway 推送审批卡片
-       │
-       ▼
-5. 用户点击 [创建 MR] 或 [打回]
-       │
-       ├─ [创建 MR] → GitLabProvider.createMR() → 返回 MR 链接
-       │
-       └─ [打回] → 返回打回提示
+研发项目只需让 AI 返回特定格式的 JSON，即可触发网关审批流程：
+
+```json
+{
+  "action": "code_change",
+  "branchName": "feature-xxx",
+  "summary": "修改摘要",
+  "files": ["file1.ts", "file2.ts"]
+}
 ```
 
-## 🔧 核心概念
+完整的对接指南请参考：**[src/skills/gateway-integration.md](src/skills/gateway-integration.md)**
 
-### Provider
+该文档可复制到研发项目的 `.opencode/skills/` 目录，指导 AI 如何与网关对接。
 
-Provider 是 Gateway 内部的平台适配器，封装不同平台的 API：
+## 🔧 扩展指南
 
-| Provider | 职责 | 触发时机 |
-|----------|------|----------|
-| **FeishuProvider** | 消息收发、卡片推送 | 接收用户消息、推送审批卡片 |
-| **OpenCodeProvider** | AI 会话管理 | 处理消息时调用 AI |
-| **GitLabProvider** | 创建 Merge Request | 用户点击 [创建 MR] |
-| **ZentaoProvider** | 创建 Bug/任务 | 未来扩展 |
+### 新增适配器
 
-### 消息队列
+```typescript
+// src/providers/dingtalk/index.ts
+import { IMessengerProvider } from '../../core';
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                         消息队列                                 │
-│                                                                  │
-│   特性：                                                         │
-│   - 按 chatId 隔离（群聊/私聊独立）                             │
-│   - 防乱序（同一会话串行处理）                                   │
-│   - 防刷屏（队列最大 100 条）                                    │
-│   - 自动清理（空队列删除）                                       │
-│                                                                  │
-│   src/core/queue.ts                                              │
-└─────────────────────────────────────────────────────────────────┘
+export class DingTalkAdapter implements IMessengerProvider {
+  async sendText(chatId: string, text: string) { /* ... */ }
+  async sendCard(chatId: string, card: unknown) { /* ... */ }
+  onMessage(handler: MessageHandler) { /* ... */ }
+}
 ```
 
-### Session 管理
+### 新增领域指令
 
+```typescript
+// src/commands/deploy/index.ts
+import { CommandHandler, Command, CommandContext } from '../types';
+
+export const deployHandler: CommandHandler<DeployPayload> = {
+  type: 'deploy',
+  
+  parse(text) {
+    // 解析部署指令
+  },
+  
+  async buildCard(command, context) {
+    return context.cardBuilder.buildDeployCard(command.payload);
+  },
+  
+  async handleInteraction(action, envelope, context) {
+    // 处理部署确认
+  },
+};
+
+// 注册到 Pipeline
+getCommandPipeline().register(deployHandler);
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                        Session 管理                              │
-│                                                                  │
-│   特性：                                                         │
-│   - 按 chatId 隔离 AI 会话                                      │
-│   - 自动过期（1 小时无活动）                                     │
-│   - 上下文保持（同一会话共享）                                   │
-│                                                                  │
-│   src/providers/opencode/index.ts                                │
-└─────────────────────────────────────────────────────────────────┘
+
+### 新增卡片平台
+
+```typescript
+// src/providers/dingtalk/card-builder.ts
+import { CardBuilder } from '../../../commands/types';
+
+export class DingTalkCardBuilder implements CardBuilder {
+  async buildPermissionCard(payload, context) { /* 钉钉卡片格式 */ }
+  async buildQuestionCard(payload, context) { /* 钉钉卡片格式 */ }
+  async buildCodeChangeCard(payload, context) { /* 钉钉卡片格式 */ }
+  async buildStatusCard(payload) { /* 钉钉卡片格式 */ }
+}
+
+// 在运行时切换
+const cardBuilder = new DingTalkCardBuilder();
+setupCommands(cardBuilder, services);
 ```
 
 ## 📝 配置详解
@@ -318,4 +449,8 @@ Provider 是 Gateway 内部的平台适配器，封装不同平台的 API：
 
 ### Q: Session 过期
 
-Session 默认 1 小时过期，可在 `src/providers/openco
+Session 默认 1 小时过期，可在 `src/adapters/opencode/index.ts` 中修改 `SESSION_TTL_MS`。
+
+## 📜 License
+
+MIT

@@ -29,7 +29,7 @@ import {
   createZentaoProvider,
   ZentaoConfig,
 } from './src/providers/zentao';
-import { setupOrchestrator } from './src/orchestrator';
+import { setupRuntime } from './src/runtime';
 import { appLogger as logger } from './src/utils/logger';
 
 // ============================================================
@@ -127,7 +127,7 @@ async function main() {
       enqueueMessage(chatId, messageId, senderId, text, feishuProvider!);
     });
 
-    setupOrchestrator(feishuProvider, gitlabProvider);
+    setupRuntime(feishuProvider, gitlabProvider);
   }
 
   // 5. 启动所有 Provider
