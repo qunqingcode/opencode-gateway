@@ -20,16 +20,13 @@ import {
 import { sendTextMessage, sendMediaMessage, sendCardMessage, createFeishuClient, uploadAndSendFile } from './send';
 import { startFeishuProvider, FeishuProviderOptions } from './receive';
 
-// 导出卡片模块
+// 导出卡片模块（精简版 - 仅核心构建器）
 export {
   // 卡片交互协议
   createFeishuCardInteractionEnvelope,
   buildFeishuCardInteractionContext,
   decodeFeishuCardAction,
   FEISHU_CARD_DEFAULT_TTL_MS,
-  FEISHU_APPROVAL_REQUEST_ACTION,
-  FEISHU_APPROVAL_CONFIRM_ACTION,
-  FEISHU_APPROVAL_CANCEL_ACTION,
 
   // 卡片构建器
   FeishuCardBuilder,
@@ -39,32 +36,10 @@ export {
   createConfirmCard,
   createListCard,
 
-  // 卡片 UX 组件
-  createApprovalCard,
-  createQuickActionLauncherCard,
-  createPermissionCard,
-  createQuestionCard,
-  createCodeChangeCard,
-  createStatusCard,
-  createThinkingCard,
-
-  // 卡片动作处理器
-  createCardActionHandler,
-  type FeishuCardActionEvent,
-  type CardActionCallbacks,
-  type CardActionResult,
-  type ContinueResult,
-  type CardActionLogger,
-
   // 类型
   type FeishuCard,
   type FeishuCardInteractionEnvelope,
   type DecodedFeishuCardAction,
-  type CardContextParams,
-  type ApprovalCardParams,
-  type PermissionCardParams,
-  type QuestionCardParams,
-  type CodeChangeCardParams,
 } from './card';
 
 // 导出文件上传
@@ -128,7 +103,6 @@ export class FeishuProvider extends BaseProvider implements IMessengerProvider {
   async initialize(logger: Logger): Promise<void> {
     await super.initialize(logger);
 
-    // 创建客户端
     this.client = createFeishuClient({
       appId: this.config.appId,
       appSecret: this.config.appSecret,
@@ -192,10 +166,13 @@ export class FeishuProvider extends BaseProvider implements IMessengerProvider {
         ? async (event) => {
             this.recordActivity();
             const actionValue = event.action.value as Record<string, unknown>;
+            const realAction = (actionValue?.action as string) || 'custom';
             
-            // 从信封中提取真实的 action
-            // 信封格式: { oc: 'ocf1', k: 'quick', a: 'code_change.create_mr', c: { h: 'chatId', ... } }
-            const realAction = (actionValue?.a as string) || 'custom';
+            // 从 context 中获取 chatId
+            const contextData = actionValue?.context as Record<string, unknown> | undefined;
+            const chatId = (contextData?.chatId as string) || '';
+            
+            this.logger?.info(`[Feishu] Card action: ${realAction}, chatId: ${chatId}`);
             
             return this.interactionHandler!({
               provider: this.id,
@@ -203,6 +180,7 @@ export class FeishuProvider extends BaseProvider implements IMessengerProvider {
               value: actionValue,
               messageId: event.open_message_id,
               userId: event.open_id || '',
+              chatId,
             });
           }
         : undefined,

@@ -1,12 +1,14 @@
 /**
  * 飞书卡片交互协议
  * 
- * 参考 OpenClaw 的卡片交互设计，实现结构化的卡片交互协议
+ * 定义卡片按钮点击后的回调数据结构
  * 
- * 核心概念：
- * - Envelope: 卡片交互的信封，包含版本、类型、动作、上下文等
- * - Kind: 交互类型 (button, quick, meta)
- * - Context: 交互上下文，用于验证用户、聊天、过期时间
+ * 结构：
+ * - version: 协议版本
+ * - kind: 交互类型 (button, quick, meta)
+ * - action: 要调用的工具名 (格式: server.tool)
+ * - args: 工具参数
+ * - context: 交互上下文 (用户、聊天、过期时间等)
  */
 
 // ============================================================
@@ -33,8 +35,8 @@ export type FeishuCardInteractionReason =
   | "wrong_user"
   | "wrong_conversation";
 
-/** 交互元数据 */
-export type FeishuCardInteractionMetadata = Record<
+/** 交互参数 (工具参数) */
+export type FeishuCardInteractionArgs = Record<
   string,
   string | number | boolean | null | undefined
 >;
@@ -42,31 +44,31 @@ export type FeishuCardInteractionMetadata = Record<
 /** 交互上下文 */
 export type FeishuCardInteractionContext = {
   /** 期望的用户 Open ID */
-  u?: string;
+  userId?: string;
   /** 期望的聊天 ID */
-  h?: string;
+  chatId?: string;
   /** 会话 Key */
-  s?: string;
+  sessionKey?: string;
   /** 过期时间戳 (毫秒) */
-  e?: number;
+  expiresAt?: number;
   /** 聊天类型 */
-  t?: "p2p" | "group";
+  chatType?: "p2p" | "group";
 };
 
 /** 卡片交互信封 */
 export type FeishuCardInteractionEnvelope = {
   /** 协议版本 */
-  oc: typeof FEISHU_CARD_INTERACTION_VERSION;
+  version: typeof FEISHU_CARD_INTERACTION_VERSION;
   /** 交互类型 */
-  k: FeishuCardInteractionKind;
-  /** 动作标识 */
-  a: string;
-  /** 查询/命令 */
-  q?: string;
-  /** 元数据 */
-  m?: FeishuCardInteractionMetadata;
-  /** 上下文 */
-  c?: FeishuCardInteractionContext;
+  kind: FeishuCardInteractionKind;
+  /** 动作标识 (工具名，格式: server.tool) */
+  action: string;
+  /** 查询/命令 (可选) */
+  query?: string;
+  /** 工具参数 */
+  args?: FeishuCardInteractionArgs;
+  /** 交互上下文 */
+  context?: FeishuCardInteractionContext;
 };
 
 /** 飞书卡片动作事件 */
@@ -119,9 +121,9 @@ function isInteractionKind(value: unknown): value is FeishuCardInteractionKind {
 }
 
 /**
- * 检查是否为有效的元数据值
+ * 检查是否为有效的参数值
  */
-function isMetadataValue(value: unknown): value is string | number | boolean | null | undefined {
+function isArgsValue(value: unknown): value is string | number | boolean | null | undefined {
   return (
     value === null ||
     value === undefined ||
@@ -139,10 +141,10 @@ function isMetadataValue(value: unknown): value is string | number | boolean | n
  * 创建卡片交互信封
  */
 export function createFeishuCardInteractionEnvelope(
-  envelope: Omit<FeishuCardInteractionEnvelope, "oc">
+  envelope: Omit<FeishuCardInteractionEnvelope, "version">
 ): FeishuCardInteractionEnvelope {
   return {
-    oc: FEISHU_CARD_INTERACTION_VERSION,
+    version: FEISHU_CARD_INTERACTION_VERSION,
     ...envelope,
   };
 }
@@ -158,11 +160,11 @@ export function buildFeishuCardInteractionContext(params: {
   sessionKey?: string;
 }): FeishuCardInteractionContext {
   return {
-    u: params.operatorOpenId,
-    ...(params.chatId ? { h: params.chatId } : {}),
-    ...(params.sessionKey ? { s: params.sessionKey } : {}),
-    e: params.expiresAt,
-    ...(params.chatType ? { t: params.chatType } : {}),
+    userId: params.operatorOpenId,
+    ...(params.chatId ? { chatId: params.chatId } : {}),
+    ...(params.sessionKey ? { sessionKey: params.sessionKey } : {}),
+    expiresAt: params.expiresAt,
+    ...(params.chatType ? { chatType: params.chatType } : {}),
   };
 }
 
@@ -196,7 +198,7 @@ export function decodeFeishuCardAction(params: {
   const actionValue = event.action.value;
 
   // 检查是否为结构化协议
-  if (!isRecord(actionValue) || actionValue.oc !== FEISHU_CARD_INTERACTION_VERSION) {
+  if (!isRecord(actionValue) || actionValue.version !== FEISHU_CARD_INTERACTION_VERSION) {
     return {
       kind: "legacy",
       text: buildFeishuCardActionTextFallback(event),
@@ -204,71 +206,59 @@ export function decodeFeishuCardAction(params: {
   }
 
   // 验证必填字段
-  if (!isInteractionKind(actionValue.k) || typeof actionValue.a !== "string" || !actionValue.a) {
-    // console.log('[Decode] Failed at required fields:', actionValue);
+  if (!isInteractionKind(actionValue.kind) || typeof actionValue.action !== "string" || !actionValue.action) {
     return { kind: "invalid", reason: "malformed" };
   }
 
   // 验证 query 字段
-  if (actionValue.q !== undefined && typeof actionValue.q !== "string") {
+  if (actionValue.query !== undefined && typeof actionValue.query !== "string") {
     return { kind: "invalid", reason: "malformed" };
   }
 
-  // 验证 metadata 字段
-  if (actionValue.m !== undefined) {
-    if (!isRecord(actionValue.m)) {
+  // 验证 args 字段
+  if (actionValue.args !== undefined) {
+    if (!isRecord(actionValue.args)) {
       return { kind: "invalid", reason: "malformed" };
     }
-    for (const value of Object.values(actionValue.m)) {
-      if (!isMetadataValue(value)) {
+    for (const value of Object.values(actionValue.args)) {
+      if (!isArgsValue(value)) {
         return { kind: "invalid", reason: "malformed" };
       }
     }
   }
 
   // 验证 context 字段
-  if (actionValue.c !== undefined) {
-    if (!isRecord(actionValue.c)) {
+  if (actionValue.context !== undefined) {
+    if (!isRecord(actionValue.context)) {
       return { kind: "invalid", reason: "malformed" };
     }
-    if (actionValue.c.u !== undefined && typeof actionValue.c.u !== "string") {
+    if (actionValue.context.userId !== undefined && typeof actionValue.context.userId !== "string") {
       return { kind: "invalid", reason: "malformed" };
     }
-    if (actionValue.c.h !== undefined && typeof actionValue.c.h !== "string") {
+    if (actionValue.context.chatId !== undefined && typeof actionValue.context.chatId !== "string") {
       return { kind: "invalid", reason: "malformed" };
     }
-    if (actionValue.c.s !== undefined && typeof actionValue.c.s !== "string") {
+    if (actionValue.context.sessionKey !== undefined && typeof actionValue.context.sessionKey !== "string") {
       return { kind: "invalid", reason: "malformed" };
     }
-    if (actionValue.c.e !== undefined && !Number.isFinite(actionValue.c.e)) {
+    if (actionValue.context.expiresAt !== undefined && !Number.isFinite(actionValue.context.expiresAt)) {
       return { kind: "invalid", reason: "malformed" };
     }
-    if (actionValue.c.t !== undefined && actionValue.c.t !== "p2p" && actionValue.c.t !== "group") {
+    if (actionValue.context.chatType !== undefined && actionValue.context.chatType !== "p2p" && actionValue.context.chatType !== "group") {
       return { kind: "invalid", reason: "malformed" };
     }
 
     // 检查过期时间
-    if (typeof actionValue.c.e === "number" && actionValue.c.e > 0 && actionValue.c.e < now) {
-      // 暂时禁用过期检查，或者给予极大的宽容度
+    if (typeof actionValue.context.expiresAt === "number" && actionValue.context.expiresAt > 0 && actionValue.context.expiresAt < now) {
+      // 暂时禁用过期检查
       // return { kind: "invalid", reason: "stale" };
     }
 
     // 验证用户
-    const expectedUser = actionValue.c.u?.trim();
+    const expectedUser = actionValue.context.userId?.trim();
     if (expectedUser && expectedUser !== (event.operator.open_id ?? "").trim()) {
       return { kind: "invalid", reason: "wrong_user" };
     }
-
-    // 验证聊天
-    // const expectedChat = actionValue.c.h?.trim();
-    // const actualChat = (event.context?.chat_id ?? "").trim();
-    // 临时注销掉会话验证，因为测试环境飞书回调可能拿不到正确的 actualChat 或者预期不符
-    
-    // if (expectedChat && actualChat && expectedChat !== actualChat) {
-    //   // 只有当 event 中确实包含了 chat_id 并且与预期不符时，才报错
-    //   // 因为某些交互事件可能没有带上 context.chat_id
-    //   return { kind: "invalid", reason: "wrong_conversation" };
-    // }
   }
 
   return {

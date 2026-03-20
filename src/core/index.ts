@@ -1,5 +1,7 @@
 /**
  * 核心模块导出
+ * 
+ * 提供 Provider 基础接口和类型定义
  */
 
 // ============================================================
@@ -22,7 +24,6 @@ export type {
   MergeRequest,
   Branch,
   Logger,
-  GatewayConfig,
 } from './types';
 
 // ============================================================
@@ -35,50 +36,6 @@ export type {
   IIssueProvider,
   IRepositoryProvider,
   INotificationProvider,
-  ProviderFactory,
 } from './provider';
 
 export { BaseProvider } from './provider';
-
-// ============================================================
-// Registry
-// ============================================================
-
-export {
-  registerProvider,
-  registerProviders,
-  createProvider,
-  createMessengerProvider,
-  createIssueProvider,
-  createRepositoryProvider,
-  getRegisteredProviders,
-  getProviderType,
-  getProviderCapabilities,
-  hasProvider,
-  getProvidersByType,
-  getProvidersByCapability,
-  isMessengerProvider,
-  isIssueProvider,
-  isRepositoryProvider,
-  isNotificationProvider,
-  ProviderManager,
-} from './registry';
-
-// ============================================================
-// Context
-// ============================================================
-
-export { gatewayContext } from './context';
-
-// ============================================================
-// Request Registry
-// ============================================================
-
-export { requestRegistry } from './request-registry';
-
-// ============================================================
-// Queue
-// ============================================================
-
-export { enqueueMessage, setMessageHandler, getQueueStats } from './queue';
-export type { MessageHandler } from './queue';

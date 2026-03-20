@@ -115,7 +115,6 @@ export type InteractionAction =
   | 'custom'         // 自定义
   | `permission.${string}`   // 权限操作
   | `question.${string}`     // 问题操作
-  | `code_change.${string}`  // 代码修改操作
   | (string & {});    // 支持任意字符串
 
 /** 交互事件 */
@@ -130,6 +129,8 @@ export interface InteractionEvent {
   messageId: string;
   /** 用户 ID */
   userId: string;
+  /** 聊天 ID */
+  chatId?: string;
   /** 原始数据 */
   raw?: unknown;
 }

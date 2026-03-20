@@ -6,6 +6,7 @@
  * 2. Session 会话管理（多租户隔离）
  * 3. AI 对话交互
  * 4. 权限/问题请求处理
+ * 
  */
 
 import { CONFIG } from '../../config';
@@ -33,16 +34,6 @@ interface ResponsePart {
   };
 }
 
-/** 代码修改请求 */
-export interface CodeChangeRequest {
-  id: string;
-  branchName: string;
-  summary: string;
-  changelog?: string;
-  files: string[];
-  docUrl?: string;
-}
-
 /** 权限请求 */
 export interface PermissionRequest {
   id: string;
@@ -68,19 +59,17 @@ export interface QuestionRequest {
 
 /** 会话结果 */
 export interface ChatResult {
-  type: 'response' | 'code_change' | 'permission' | 'question';
-  data: string | CodeChangeRequest | PermissionRequest | QuestionRequest;
+  type: 'response' | 'permission' | 'question';
+  data: string | PermissionRequest | QuestionRequest;
 }
 
 /** 回调函数类型 */
-export type CodeChangeCallback = (chatId: string, codeChange: CodeChangeRequest) => Promise<void>;
 export type PermissionCallback = (chatId: string, permission: PermissionRequest) => Promise<void>;
 export type QuestionCallback = (chatId: string, question: QuestionRequest) => Promise<void>;
 
 export interface ChatCallbacks {
   onPermission?: PermissionCallback;
   onQuestion?: QuestionCallback;
-  onCodeChange?: CodeChangeCallback;
 }
 
 // ============================================================
@@ -176,7 +165,7 @@ function cleanupExpiredSessions(): void {
  * 获取或创建 Session
  * 通过 chatId 实现多租户会话隔离
  */
-async function getOrCreateSession(chatId: string): Promise<string> {
+export async function getOrCreateSession(chatId: string): Promise<string> {
   // 定期清理过期 session
   if (sessionMap.size > 100) {
     cleanupExpiredSessions();
@@ -215,7 +204,7 @@ async function getOrCreateSession(chatId: string): Promise<string> {
 /**
  * 获取 Session ID（用于 continueAfterReply）
  */
-function getSessionId(chatId: string): string | undefined {
+export function getSessionId(chatId: string): string | undefined {
   return sessionMap.get(chatId)?.id;
 }
 
@@ -286,138 +275,6 @@ export async function rejectQuestion(requestId: string): Promise<boolean> {
 }
 
 // ============================================================
-// 代码修改请求解析
-// ============================================================
-
-/**
- * 从文本中提取完整的 JSON 对象
- */
-function extractCompleteJson(text: string, startIndex: number): string | null {
-  if (text[startIndex] !== '{') return null;
-
-  let depth = 0;
-  let inString = false;
-  let escape = false;
-
-  for (let i = startIndex; i < text.length; i++) {
-    const char = text[i];
-
-    if (escape) {
-      escape = false;
-      continue;
-    }
-
-    if (char === '\\') {
-      escape = true;
-      continue;
-    }
-
-    if (char === '"') {
-      inString = !inString;
-      continue;
-    }
-
-    if (!inString) {
-      if (char === '{') {
-        depth++;
-      } else if (char === '}') {
-        depth--;
-        if (depth === 0) {
-          return text.substring(startIndex, i + 1);
-        }
-      }
-    }
-  }
-
-  return null;
-}
-
-/**
- * 从文本中提取代码修改请求
- */
-function extractCodeChangeFromText(text: string): CodeChangeRequest | null {
-  // 提取 ```json ... ``` 代码块
-  const codeBlockRegex = /```(?:json)?\s*([\s\S]*?)```/g;
-  let match;
-  
-  while ((match = codeBlockRegex.exec(text)) !== null) {
-    const content = match[1].trim();
-    if (!content.startsWith('{')) continue;
-    
-    try {
-      const parsed = JSON.parse(content);
-      
-      if (parsed.action === 'code_change' || (parsed.summary && parsed.files)) {
-        const files = Array.isArray(parsed.files) 
-          ? parsed.files.map(String)
-          : typeof parsed.files === 'string'
-            ? parsed.files.split(',').map((f: string) => f.trim()).filter(Boolean)
-            : [];
-        
-        if (files.length === 0) continue;
-        
-        return {
-          id: `code_change_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
-          branchName: (parsed.branchName || parsed.branch || `ai-change-${Date.now()}`) as string,
-          summary: parsed.summary as string,
-          changelog: parsed.changelog as string | undefined,
-          files,
-          docUrl: (parsed.docUrl || parsed.doc_url) as string | undefined,
-        };
-      }
-    } catch {
-      // 忽略非 JSON 内容
-    }
-  }
-
-  // 如果没找到代码块，尝试直接提取 JSON
-  let startIdx = text.indexOf('{');
-  while (startIdx !== -1) {
-    const extracted = extractCompleteJson(text, startIdx);
-    if (extracted) {
-      try {
-        const parsed = JSON.parse(extracted);
-        
-        if (parsed.action === 'code_change' || (parsed.summary && parsed.files)) {
-          const files = Array.isArray(parsed.files) 
-            ? parsed.files.map(String)
-            : typeof parsed.files === 'string'
-              ? parsed.files.split(',').map((f: string) => f.trim()).filter(Boolean)
-              : [];
-          
-          if (files.length > 0) {
-            return {
-              id: `code_change_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
-              branchName: (parsed.branchName || parsed.branch || `ai-change-${Date.now()}`) as string,
-              summary: parsed.summary as string,
-              changelog: parsed.changelog as string | undefined,
-              files,
-              docUrl: (parsed.docUrl || parsed.doc_url) as string | undefined,
-            };
-          }
-        }
-      } catch {
-        // 忽略非 JSON 内容
-      }
-      startIdx = text.indexOf('{', startIdx + extracted.length);
-    } else {
-      startIdx = text.indexOf('{', startIdx + 1);
-    }
-  }
-
-  return null;
-}
-
-/**
- * 移除文本中的代码修改 JSON 块
- */
-function stripCodeChangeJson(text: string): string {
-  return text
-    .replace(/```(?:json)?\s*\{[\s\S]*?(?:"action"\s*:\s*"code_change"|"summary"[\s\S]*?"files")[\s\S]*?\}\s*```/g, '')
-    .trim();
-}
-
-// ============================================================
 // AI 对话交互
 // ============================================================
 
@@ -481,14 +338,14 @@ async function checkQuestionRequest(
  * 
  * @param prompt 用户输入
  * @param chatId 会话 ID（用于多租户隔离）
- * @param callbacks 回调函数（权限/问题/代码修改）
+ * @param callbacks 回调函数（权限/问题）
  */
 export async function chat(
   prompt: string,
   chatId: string,
   callbacks: ChatCallbacks = {}
 ): Promise<ChatResult> {
-  const { onPermission, onQuestion, onCodeChange } = callbacks;
+  const { onPermission, onQuestion } = callbacks;
 
   try {
     const sessionId = await getOrCreateSession(chatId);
@@ -549,16 +406,8 @@ export async function chat(
       .map((p: ResponsePart) => p.text!)
       .join('\n\n');
 
-    // 检查代码修改请求（从文本中解析）
-    const codeChange = extractCodeChangeFromText(textContent);
-    if (codeChange && onCodeChange) {
-      await onCodeChange(chatId, codeChange);
-      return { type: 'code_change', data: codeChange };
-    }
-
     // 返回普通响应
-    const cleanedText = stripCodeChangeJson(textContent);
-    return { type: 'response', data: cleanedText || formatResponse(parts) };
+    return { type: 'response', data: textContent || formatResponse(parts) };
 
   } catch (error) {
     logger.error('[OpenCode] Chat failed:', (error as Error).message);

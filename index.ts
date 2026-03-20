@@ -1,61 +1,142 @@
 /**
- * OpenCode Gateway 主入口
+ * OpenCode Gateway 主入口 (新架构)
  * 
- * 职责：启动服务 + 编排各模块
+ * 三层架构：
+ * - Layer 1: Channels - 渠道适配层 (飞书、钉钉等)
+ * - Layer 2: Gateway - 网关核心层 (Session、MCP客户端)
+ * - Layer 3: MCP Servers - 原子能力层 (禅道、GitLab等)
  * 
- * 使用场景：飞书聊天 → AI 处理 → 审批确认 → 执行操作
+ * MCP 暴露方式：
+ * - 统一 HTTP 服务，端口 3100
+ * - OpenCode 配置为 Remote MCP 连接到此服务
  */
 
-import { CONFIG, validateConfig, getEnabledProviders } from './src/config';
-import {
-  ProviderManager,
-  registerProvider,
-  createProvider,
-  gatewayContext,
-  enqueueMessage,
-} from './src/core';
-import { IMessengerProvider, IRepositoryProvider, IIssueProvider } from './src/core';
-import { preInit } from './src/providers/opencode';
-import {
-  FeishuProvider,
-  createFeishuProvider,
-  FeishuConfig,
-} from './src/providers/feishu';
-import {
-  createGitLabProvider,
-  GitLabConfig,
-} from './src/providers/gitlab';
-import {
-  createZentaoProvider,
-  ZentaoConfig,
-} from './src/providers/zentao';
-import { setupRuntime } from './src/runtime';
+import { CONFIG, validateConfig } from './src/config';
 import { appLogger as logger } from './src/utils/logger';
 
+// Layer 1: Channels
+import { createChannel, getRegisteredChannelTypes } from './src/channels';
+import type { ChannelPlugin } from './src/channels/types';
+import type { FeishuChannelConfig } from './src/channels/feishu';
+
+// Layer 2: Gateway
+import { createGateway, UnifiedMCPHTTPServer } from './src/gateway';
+import type { GatewayConfig } from './src/gateway/types';
+
+// Layer 3: MCP Servers
+import { createMCPServer, getRegisteredServerTypes } from './src/mcp-servers';
+
 // ============================================================
-// Provider 注册
+// 配置
 // ============================================================
 
-registerProvider(
-  'feishu',
-  (config, log) => createFeishuProvider(config as FeishuConfig, log),
-  'messenger',
-  ['messaging', 'media', 'notification']
-);
+/** MCP HTTP 服务端口 */
+const MCP_HTTP_PORT = parseInt(process.env.MCP_HTTP_PORT || '3100');
 
-registerProvider(
-  'gitlab',
-  (config, log) => createGitLabProvider(config as GitLabConfig, log),
-  'vcs',
-  ['repository']
-);
+/** 从环境变量获取配置 */
+function getGatewayConfig(): GatewayConfig {
+  return {
+    opencode: {
+      url: CONFIG.opencode.url,
+      timeout: CONFIG.opencode.timeout || 600000,
+      modelId: CONFIG.opencode.modelId,
+      providerId: CONFIG.opencode.providerId,
+    },
+    mcpServers: [],
+  };
+}
 
-registerProvider(
-  'zentao',
-  (config, log) => createZentaoProvider(config as ZentaoConfig, log),
-  'issue',
-  ['issues', 'project']
-);
+/** 获取飞书 Channel 配置 */
+function getFeishuChannelConfig(): FeishuChannelConfig | null {
+  const appId = process.env.FEISHU_APP_ID;
+  const appSecret = process.env.FEISHU_APP_SECRET;
+
+  if (!appId || !appSecret) {
+    return null;
+  }
+
+  return {
+    id: 'feishu',
+    type: 'feishu',
+    enabled: true,
+    name: process.env.FEISHU_BOT_NAME || 'OpenCode Bot',
+    appId,
+    appSecret,
+    connectionMode: (process.env.FEISHU_CONNECTION_MODE as 'websocket' | 'webhook') || 'websocket',
+    domain: (process.env.FEISHU_DOMAIN as 'feishu' | 'lark') || 'feishu',
+    webhookPort: process.env.FEISHU_WEBHOOK_PORT ? parseInt(process.env.FEISHU_WEBHOOK_PORT) : undefined,
+    webhookPath: process.env.FEISHU_WEBHOOK_PATH,
+    encryptKey: process.env.FEISHU_ENCRYPT_KEY,
+    verificationToken: process.env.FEISHU_VERIFICATION_TOKEN,
+    thinkingThresholdMs: process.env.FEISHU_THINKING_THRESHOLD_MS 
+      ? parseInt(process.env.FEISHU_THINKING_THRESHOLD_MS) 
+      : undefined,
+    botNames: process.env.FEISHU_BOT_NAMES?.split(','),
+  };
+}
+
+/** 获取禅道 MCP Server 配置 */
+function getZentaoMCPConfig() {
+  const baseUrl = process.env.ZENTAO_BASE_URL;
+  if (!baseUrl) return null;
+
+  return {
+    name: 'zentao',
+    enabled: true,
+    baseUrl,
+    token: process.env.ZENTAO_TOKEN,
+    account: process.env.ZENTAO_ACCOUNT,
+    password: process.env.ZENTAO_PASSWORD,
+    projectId: process.env.ZENTAO_PROJECT_ID,
+  };
+}
+
+/** 获取 GitLab MCP Server 配置 */
+function getGitLabMCPConfig() {
+  const baseUrl = process.env.GITLAB_URL;
+  const token = process.env.GITLAB_TOKEN;
+  const projectId = process.env.GITLAB_PROJECT_ID;
+
+  if (!baseUrl || !token || !projectId) return null;
+
+  return {
+    name: 'gitlab',
+    enabled: true,
+    baseUrl,
+    token,
+    projectId,
+  };
+}
+
+/** 获取 Workflow MCP Server 配置（需要 GitLab + 禅道同时配置） */
+function getWorkflowMCPConfig() {
+  const gitlabUrl = process.env.GITLAB_URL;
+  const gitlabToken = process.env.GITLAB_TOKEN;
+  const gitlabProjectId = process.env.GITLAB_PROJECT_ID;
+  const zentaoUrl = process.env.ZENTAO_BASE_URL;
+
+  // 需要 GitLab 和禅道都配置才启用 workflow
+  if (!gitlabUrl || !gitlabToken || !gitlabProjectId || !zentaoUrl) {
+    return null;
+  }
+
+  return {
+    name: 'workflow',
+    enabled: true,
+    gitlab: {
+      baseUrl: gitlabUrl,
+      token: gitlabToken,
+      projectId: gitlabProjectId,
+    },
+    zentao: {
+      baseUrl: zentaoUrl,
+      token: process.env.ZENTAO_TOKEN,
+      account: process.env.ZENTAO_ACCOUNT,
+      password: process.env.ZENTAO_PASSWORD,
+      projectId: process.env.ZENTAO_PROJECT_ID,
+    },
+  };
+}
 
 // ============================================================
 // 主函数
@@ -65,90 +146,112 @@ async function main() {
   validateConfig();
 
   logger.info('========================================');
-  logger.info('  OpenCode Gateway v2.6');
-  logger.info('  飞书 AI 智能体网关');
+  logger.info('  OpenCode Gateway v3.0');
+  logger.info('  三层架构: Channels → Gateway → MCP');
   logger.info('========================================');
 
-  // 1. 初始化 OpenCode SDK
-  logger.info('[Startup] Initializing OpenCode SDK...');
-  await preInit();
-  logger.info('[Startup] SDK ready');
+  // 1. 创建 Gateway
+  const gatewayConfig = getGatewayConfig();
+  const gateway = createGateway(gatewayConfig, logger);
 
-  // 2. 创建 Provider 管理器
-  const manager = new ProviderManager(logger);
-  gatewayContext.setProviderManager(manager);
+  // 2. 注册 MCP Servers (Layer 3)
+  logger.info('[Startup] Registering MCP Servers...');
+  const mcpClient = gateway.getMCPClient();
 
-  // 3. 初始化各 Provider
-  const enabledProviders = getEnabledProviders();
-  logger.info(`[Startup] Found ${enabledProviders.length} provider(s)`);
-
-  let feishuProvider: IMessengerProvider | null = null;
-  let gitlabProvider: IRepositoryProvider | null = null;
-  let zentaoProvider: IIssueProvider | null = null;
-
-  for (const providerConfig of enabledProviders) {
-    try {
-      // 使用 registry 的 createProvider 替代 switch-case
-      const provider = createProvider(providerConfig.id, providerConfig, logger);
-      if (!provider) continue;
-
-      await manager.add(providerConfig.id, provider);
-
-      // 记录关键 Provider 引用
-      if (providerConfig.id === 'feishu') {
-        feishuProvider = manager.getMessengerProvider('feishu') as FeishuProvider;
-        if (feishuProvider) {
-          const client = (feishuProvider as FeishuProvider).getClient?.();
-          if (client) {
-            gatewayContext.setFeishuClient(client);
-          }
-        }
-      }
-
-      if (providerConfig.id === 'gitlab') {
-        gitlabProvider = provider as IRepositoryProvider;
-        gatewayContext.setGitLabProvider(gitlabProvider);
-      }
-
-      if (providerConfig.id === 'zentao') {
-        zentaoProvider = provider as IIssueProvider;
-        gatewayContext.setZentaoProvider(zentaoProvider);
-      }
-    } catch (error) {
-      logger.error(`[Startup] Failed to init ${providerConfig.id}:`, (error as Error).message);
+  const zentaoConfig = getZentaoMCPConfig();
+  if (zentaoConfig) {
+    const zentaoServer = createMCPServer('zentao', zentaoConfig as Record<string, unknown>, logger);
+    if (zentaoServer) {
+      mcpClient.registerServer('zentao', zentaoServer);
     }
   }
 
-  // 4. 设置流程编排
-  if (feishuProvider) {
-    feishuProvider.onMessage(async (event) => {
-      const { chatId, messageId, senderId } = event.source;
-      const text = event.content.text || '';
-      enqueueMessage(chatId, messageId, senderId, text, feishuProvider!);
-    });
-
-    setupRuntime(feishuProvider, gitlabProvider);
+  const gitlabConfig = getGitLabMCPConfig();
+  if (gitlabConfig) {
+    const gitlabServer = createMCPServer('gitlab', gitlabConfig as Record<string, unknown>, logger);
+    if (gitlabServer) {
+      mcpClient.registerServer('gitlab', gitlabServer);
+    }
   }
 
-  // 5. 启动所有 Provider
-  await manager.startAll();
+  // Workflow MCP Server（需要 GitLab + 禅道配置）
+  const workflowConfig = getWorkflowMCPConfig();
+  if (workflowConfig) {
+    const workflowServer = createMCPServer('workflow', workflowConfig as Record<string, unknown>, logger);
+    if (workflowServer) {
+      mcpClient.registerServer('workflow', workflowServer);
+      logger.info('[Startup] Workflow MCP Server enabled (GitLab + Zentao)');
+    }
+  }
 
-  logger.info('========================================');
-  logger.info(`  Providers: ${manager.size}`);
-  logger.info(`  OpenCode: ${CONFIG.opencode.url}`);
-  logger.info('========================================');
+  const registeredServers = getRegisteredServerTypes();
+  logger.info(`[Startup] MCP Servers: ${registeredServers.join(', ') || 'none'}`);
 
-  // 6. 健康检查
-  const healthResults = await manager.healthCheckAll();
-  healthResults.forEach((result, id) => {
-    const status = result.healthy ? 'OK' : 'FAIL';
-    logger.info(`  [${status}] ${id}: ${result.message}`);
-  });
+  // 3. 初始化 Gateway
+  logger.info('[Startup] Initializing Gateway...');
+  await gateway.init();
 
-  // 7. 优雅关闭
+  // 4. 启动统一 MCP HTTP 服务
+  logger.info('[Startup] Starting unified MCP HTTP server...');
+  const mcpHttpServer = new UnifiedMCPHTTPServer(mcpClient, logger, MCP_HTTP_PORT);
+  mcpHttpServer.setGateway(gateway);  // 设置 Gateway，用于获取活跃上下文
+  await mcpHttpServer.start();
+
+  // 5. 注册 Channels (Layer 1)
+  logger.info('[Startup] Registering Channels...');
+  const feishuConfig = getFeishuChannelConfig();
+  let feishuChannel: ChannelPlugin | null = null;
+
+  if (feishuConfig) {
+    feishuChannel = createChannel(feishuConfig, logger);
+    if (feishuChannel) {
+      gateway.registerChannel(feishuChannel);
+      logger.info('[Startup] Feishu channel registered');
+    }
+  }
+
+  logger.info(`[Startup] Channels: ${getRegisteredChannelTypes().join(', ') || 'none'}`);
+
+  // 6. 启动 Channel
+  if (feishuChannel) {
+    logger.info('[Startup] Starting Feishu channel...');
+    await feishuChannel.lifecycle.start();
+    
+    // 健康检查
+    const health = await feishuChannel.lifecycle.healthCheck();
+    const status = health.healthy ? 'OK' : 'FAIL';
+    logger.info(`  [${status}] feishu: ${health.message}`);
+    
+    // 将 Channel 设置给 MCP HTTP Server，使工具能发送消息
+    mcpHttpServer.setChannel(feishuChannel);
+  }
+
+  // 7. 打印工具信息
+  const tools = await mcpClient.discoverTools();
+  logger.info(`[Startup] Available MCP tools: ${tools.length}`);
+  
+  if (tools.length > 0) {
+    tools.slice(0, 8).forEach(tool => {
+      logger.info(`  - ${tool.name}: ${tool.description.slice(0, 40)}...`);
+    });
+    if (tools.length > 8) {
+      logger.info(`  ... and ${tools.length - 8} more`);
+    }
+  }
+
+  // 8. 打印 OpenCode 配置指南
+  printOpenCodeConfig(mcpHttpServer.getUrl(), registeredServers);
+
+  // 9. 优雅关闭
   const shutdown = async () => {
     logger.info('[Shutdown] Stopping...');
-    await manager.destroyAll();
+    
+    if (feishuChannel) {
+      await feishuChannel.lifecycle.stop();
+    }
+    
+    await mcpHttpServer.stop();
+    await gateway.shutdown();
     process.exit(0);
   };
 
@@ -156,6 +259,45 @@ async function main() {
   process.on('SIGTERM', shutdown);
   process.on('uncaughtException', (err) => logger.error('[Error] Uncaught:', err));
   process.on('unhandledRejection', (reason) => logger.error('[Error] Unhandled:', reason));
+
+  logger.info('[Startup] Gateway is running. Press Ctrl+C to stop.');
+}
+
+/**
+ * 打印 OpenCode 配置指南
+ */
+function printOpenCodeConfig(mcpUrl: string, servers: string[]) {
+  console.log('');
+  console.log('╔════════════════════════════════════════════════════════════════╗');
+  console.log('║              OpenCode MCP 配置指南                              ║');
+  console.log('╚════════════════════════════════════════════════════════════════╝');
+  console.log('');
+  console.log('将以下配置添加到 OpenCode 配置文件:');
+  console.log('');
+  console.log('  Windows: %USERPROFILE%\\.config\\opencode\\opencode.json');
+  console.log('  macOS/Linux: ~/.config/opencode/opencode.json');
+  console.log('');
+  console.log('┌─────────────────────────────────────────────────────────────────┐');
+  console.log('│ {                                                               │');
+  console.log('│   "$schema": "https://opencode.ai/config.json",                 │');
+  console.log('│   "mcp": {                                                      │');
+  console.log('│     "opencode-gateway": {                                       │');
+  console.log('│       "type": "remote",                                         │');
+  console.log(`│       "url": "${mcpUrl}",                    │`);
+  console.log('│       "enabled": true                                           │');
+  console.log('│     }                                                           │');
+  console.log('│   }                                                             │');
+  console.log('│ }                                                               │');
+  console.log('└─────────────────────────────────────────────────────────────────┘');
+  console.log('');
+  console.log('可用工具:');
+  servers.forEach(server => {
+    console.log(`  - ${server}.* (如: ${server}.get_bug, ${server}.create_mr)`);
+  });
+  console.log('');
+  console.log('验证工具:');
+  console.log('  opencode mcp list');
+  console.log('');
 }
 
 // ============================================================
