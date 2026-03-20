@@ -152,7 +152,7 @@ export function startFeishuProvider(options: FeishuProviderOptions): { stop: () 
 
       const senderId = (sender as { sender_id?: { open_id?: string } }).sender_id?.open_id ?? '';
 
-      log.info(`Received from ${senderId}: ${text.slice(0, 80)}`);
+      log.info(`Received from ${senderId} (chatId=${chatId}, chatType=${chatType}): ${text.slice(0, 80)}`);
 
       // 发送 OK 表情确认收到消息
       if (messageId) {

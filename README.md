@@ -19,8 +19,8 @@
 │                            OpenCode Gateway                                  │
 │                                                                              │
 │  ┌─────────────┐   ┌─────────────┐   ┌─────────────┐   ┌─────────────┐     │
-│  │  Runtime    │──►│   Domain    │──►│   Adapter   │──►│  External   │     │
-│  │  (运行时)    │   │  (领域层)   │   │  (适配器)   │   │  (外部系统)  │     │
+│  │  Runtime    │──►│  Commands   │──►│   Adapter   │──►│  External   │     │
+│  │  (运行时)    │   │  (指令层)   │   │  (适配器)   │   │  (外部系统)  │     │
 │  └─────────────┘   └─────────────┘   └─────────────┘   └─────────────┘     │
 │         │                 │                 │                               │
 │         ▼                 ▼                 ▼                               │
@@ -58,7 +58,7 @@
     │
     ▼
 ┌─────────────┐
-│   Domain    │ 解析指令、构建卡片
+│  Commands   │ 解析指令、构建卡片
 └─────────────┘
     │
     ▼
@@ -71,7 +71,7 @@
     │
     ▼
 ┌─────────────┐
-│   Domain    │ 处理交互（创建 MR 等）
+│  Commands   │ 处理交互（创建 MR 等）
 └─────────────┘
     │
     ▼
@@ -120,8 +120,8 @@ opencode-gateway/
 │   │   └── zentao/             #   禅道适配器
 │   │       └── index.ts        #     Bug/任务管理
 │   │
-│   ├── commands/               # 领域层
-│   │   ├── types.ts            #   领域类型定义
+│   ├── commands/               # 指令层
+│   │   ├── types.ts            #   指令类型定义
 │   │   ├── pipeline.ts         #   指令流水线
 │   │   ├── code-change/        #   代码修改指令
 │   │   │   └── index.ts
@@ -163,9 +163,9 @@ interface IRepositoryProvider {
 }
 ```
 
-### 领域指令模式（Command Pattern）
+### 指令层模式（Command Pattern）
 
-领域层定义业务指令的完整生命周期：
+指令层定义业务指令的完整生命周期：
 
 ```typescript
 // commands/types.ts
@@ -346,7 +346,7 @@ export class DingTalkAdapter implements IMessengerProvider {
 }
 ```
 
-### 新增领域指令
+### 新增指令
 
 ```typescript
 // src/commands/deploy/index.ts

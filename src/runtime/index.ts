@@ -45,7 +45,7 @@ async function sendCard(
   meta: { requestId: string; chatId: string; senderId: string; messageId: string },
   card: unknown
 ): Promise<void> {
-  logger.info(`[Card] ${meta.requestId}`);
+  logger.info(`[Card] requestId=${meta.requestId}, chatId=${meta.chatId}, senderId=${meta.senderId}`);
   requestRegistry.set(meta.requestId, {
     chatId: meta.chatId,
     senderId: meta.senderId,
@@ -281,6 +281,8 @@ export function createCardHandler(
   }): Promise<{ toast?: { type: string; content: string }; card?: unknown }> => {
     const pipeline = getCommandPipeline();
 
+    logger.info(`[CardHandler] action=${event.action}, value=${JSON.stringify(event.value).slice(0, 200)}`);
+
     // 检查是否是指令层能处理的动作
     if (!pipeline.canHandleAction(event.action)) {
       logger.warn(`[CardHandler] Unknown action: ${event.action}`);
@@ -294,15 +296,31 @@ export function createCardHandler(
       metadata: event.value,
     };
 
-    // 获取 chatId
-    const requestId = event.action.split('.')[2];
-    const chatId = requestRegistry.getChatId(requestId);
+    // 从信封上下文中获取 chatId
+    // 信封格式: { oc: 'ocf1', k: 'quick', a: 'code_change.create_mr', c: { h: 'chatId', ... } }
+    const contextData = event.value?.c as Record<string, unknown> | undefined;
+    const chatId = contextData?.h as string | undefined;
 
     if (!chatId) {
-      return { toast: { type: 'error', content: '请求已过期' } };
+      // 尝试从 requestRegistry 获取（旧逻辑兜底）
+      const requestId = event.action.split('.')[2];
+      const fallbackChatId = requestRegistry.getChatId(requestId);
+      
+      if (!fallbackChatId) {
+        return { toast: { type: 'error', content: '请求已过期' } };
+      }
+      
+      const cmdContext = buildCommandContext(
+        fallbackChatId,
+        event.userId,
+        event.messageId,
+        messengerProvider,
+        gitlabProvider
+      );
+      return pipeline.handleInteraction(event.action, envelope, cmdContext);
     }
 
-    const context = buildCommandContext(
+    const cmdContext = buildCommandContext(
       chatId,
       event.userId,
       event.messageId,
@@ -310,7 +328,7 @@ export function createCardHandler(
       gitlabProvider
     );
 
-    return pipeline.handleInteraction(event.action, envelope, context);
+    return pipeline.handleInteraction(event.action, envelope, cmdContext);
   };
 }
 

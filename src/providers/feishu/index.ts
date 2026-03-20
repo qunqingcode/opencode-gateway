@@ -191,10 +191,16 @@ export class FeishuProvider extends BaseProvider implements IMessengerProvider {
       onCardAction: this.interactionHandler
         ? async (event) => {
             this.recordActivity();
+            const actionValue = event.action.value as Record<string, unknown>;
+            
+            // 从信封中提取真实的 action
+            // 信封格式: { oc: 'ocf1', k: 'quick', a: 'code_change.create_mr', c: { h: 'chatId', ... } }
+            const realAction = (actionValue?.a as string) || 'custom';
+            
             return this.interactionHandler!({
               provider: this.id,
-              action: 'custom',
-              value: event.action.value as Record<string, unknown>,
+              action: realAction,
+              value: actionValue,
               messageId: event.open_message_id,
               userId: event.open_id || '',
             });
