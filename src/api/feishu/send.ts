@@ -69,6 +69,9 @@ export async function sendTextMessage(
           msg_type: 'text',
         },
       });
+      if (res.code !== 0) {
+        return { ok: false, error: `Feishu API Error [${res.code}]: ${res.msg}` };
+      }
       return { ok: true, messageId: res?.data?.message_id ?? '' };
     }
 
@@ -80,6 +83,9 @@ export async function sendTextMessage(
         content: JSON.stringify({ text }),
       },
     });
+    if (res.code !== 0) {
+      return { ok: false, error: `Feishu API Error [${res.code}]: ${res.msg}` };
+    }
     return { ok: true, messageId: res?.data?.message_id ?? '' };
   } catch (err) {
     return {
@@ -131,6 +137,9 @@ export async function sendCardMessage(
           msg_type: 'interactive',
         },
       });
+      if (res.code !== 0) {
+        return { ok: false, error: `Feishu API Error [${res.code}]: ${res.msg}` };
+      }
       return { ok: true, messageId: res?.data?.message_id ?? '' };
     }
 
@@ -142,6 +151,9 @@ export async function sendCardMessage(
         content: JSON.stringify(card),
       },
     });
+    if (res.code !== 0) {
+      return { ok: false, error: `Feishu API Error [${res.code}]: ${res.msg}` };
+    }
     return { ok: true, messageId: res?.data?.message_id ?? '' };
   } catch (err) {
     return {

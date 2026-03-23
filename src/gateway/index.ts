@@ -112,15 +112,18 @@ export class Gateway implements IGateway {
       throw new Error('OpenCode client not initialized');
     }
 
-    const options: Record<string, unknown> = { agent: 'build' };
-    if (this.config.opencode.modelId) {
-      options.model_id = this.config.opencode.modelId;
-    }
-    if (this.config.opencode.providerId) {
-      options.provider_id = this.config.opencode.providerId;
+    // 按照官方文档格式
+    const body: Record<string, unknown> = { agent: 'build' };
+    
+    // model 配置格式: { providerID, modelID }
+    if (this.config.opencode.modelId && this.config.opencode.providerId) {
+      body.model = {
+        providerID: this.config.opencode.providerId,
+        modelID: this.config.opencode.modelId,
+      };
     }
 
-    const result = await this.opencodeClient.session.create({ body: options });
+    const result = await this.opencodeClient.session.create({ body });
     const sessionId = result?.data?.id;
 
     if (!sessionId) {
@@ -160,17 +163,23 @@ export class Gateway implements IGateway {
     try {
       // 获取或创建 Session
       const sessionId = await this.sessionManager.getOrCreate(chatId);
+      this.logger.info(`[Gateway] Session ID: ${sessionId}`);
 
       // 设置活跃上下文（供 MCP 工具使用）
       this.sessionManager.setActiveContext({ chatId, userId, sessionId, channelId });
 
       // 调用 OpenCode
       const response = await this.callOpenCode(sessionId, text);
+      this.logger.info(`[Gateway] OpenCode response: ${response?.slice(0, 200) || '(null)'}`);
 
       // 获取 Channel 发送响应
       const channel = this.channels.get(channelId);
+      this.logger.info(`[Gateway] Channel found: ${!!channel}, channelId: ${channelId}`);
       if (channel && response) {
+        this.logger.info(`[Gateway] Sending response to ${chatId}`);
         await channel.outbound.sendText(chatId, response);
+      } else {
+        this.logger.warn(`[Gateway] No response to send - channel: ${!!channel}, response: ${!!response}`);
       }
     } catch (error) {
       this.logger.error(`[Gateway] Message processing failed: ${(error as Error).message}`);
@@ -187,252 +196,355 @@ export class Gateway implements IGateway {
       throw new Error('OpenCode client not initialized');
     }
 
+    this.logger.info(`[OpenCode] Sending prompt to session ${sessionId}: ${prompt.slice(0, 100)}...`);
+
     const timeout = this.config.opencode.timeout || 600000;
     const progressConfig = this.config.opencode.progress || {};
 
-    this.logger.info(`[OpenCode] Sending prompt to session ${sessionId}: ${prompt.slice(0, 100)}...`);
+    // 构建请求 body，按照官方文档格式
+    const body: Record<string, unknown> = {
+      parts: [{ type: 'text' as const, text: prompt }],
+    };
+    
+    // 添加 model 配置
+    if (this.config.opencode.modelId && this.config.opencode.providerId) {
+      body.model = {
+        providerID: this.config.opencode.providerId,
+        modelID: this.config.opencode.modelId,
+      };
+    }
 
-    // 使用 promptAsync + SSE 事件流，避免阻塞
     try {
-      // 1. 启动 SSE 事件流监听
-      const eventStream = this.opencodeClient.global.event();
-      
-      // 防御性检查
-      if (!eventStream?.stream) {
-        this.logger.error('[OpenCode] Event stream is not available, falling back to sync mode');
-        // 降级：使用同步模式
-        const result = await this.opencodeClient.session.prompt({
-          path: { id: sessionId },
-          body: {
-            parts: [{ type: 'text' as const, text: prompt }],
-          },
-        });
-        return result?.data?.output || result?.data?.text || null;
+      // 尝试使用 SSE 事件流模式（官方文档推荐）
+      // 参考文档: https://opencode.ai/docs/zh-cn/sdk/#events
+      if (progressConfig.enabled !== false) {
+        return await this.callOpenCodeWithSSE(sessionId, body, timeout, progressConfig);
       }
-      
-      const streamIterator = eventStream.stream[Symbol.asyncIterator]();
+    } catch (sseError) {
+      this.logger.warn(`[OpenCode] SSE mode failed, falling back to sync mode: ${(sseError as Error).message}`);
+    }
 
-      // 2. 发送异步 prompt（立即返回）
-      await this.opencodeClient.session.promptAsync({
-        path: { id: sessionId },
-        body: {
-          parts: [{ type: 'text' as const, text: prompt }],
-        },
-      });
+    // 降级：同步模式 - 直接使用 session.prompt
+    return await this.callOpenCodeSync(sessionId, body);
+  }
 
-      this.logger.info(`[OpenCode] Prompt sent async, waiting for events...`);
+  /**
+   * SSE 事件流模式（官方文档推荐）
+   * 参考文档: https://opencode.ai/docs/zh-cn/sdk/#events
+   */
+  private async callOpenCodeWithSSE(
+    sessionId: string,
+    body: Record<string, unknown>,
+    timeout: number,
+    progressConfig: { showTextOutput?: boolean; showToolStatus?: boolean }
+  ): Promise<string | null> {
+    this.logger.info('[OpenCode] Starting SSE event stream mode...');
 
-      // 3. 收集响应和状态
-      const textParts: string[] = [];
-      let completed = false;
-      const startTime = Date.now();
+    // 1. 订阅事件流（按照官方文档）
+    // const events = await client.event.subscribe()
+    // for await (const event of events.stream) { ... }
+    const eventStream = await this.opencodeClient.event.subscribe();
+    
+    if (!eventStream?.stream) {
+      throw new Error('Event stream not available');
+    }
 
-      // 4. 监听事件流直到完成或超时
-      while (!completed) {
-        // 检查超时
-        if (Date.now() - startTime > timeout) {
-          throw new Error(`AI 响应超时 (${timeout / 1000}s)`);
-        }
+    this.logger.info('[OpenCode] Event stream subscribed');
 
-        // 等待下一个事件（带超时）
-        const eventPromise = streamIterator.next();
-        const timeoutPromise = new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('Event stream timeout')), 30000)
-        );
+    // 2. 发送 prompt
+    this.logger.info('[OpenCode] Sending prompt...');
+    
+    const promptPromise = this.opencodeClient.session.prompt({
+      path: { id: sessionId },
+      body,
+    });
 
-        let eventResult;
-        try {
-          eventResult = await Promise.race([eventPromise, timeoutPromise]);
-        } catch (e) {
-          // 超时后继续等待
-          continue;
-        }
+    // 3. 监听事件流
+    const textParts: Record<number, string> = {};
+    let completed = false;
+    const startTime = Date.now();
+    let eventCount = 0;
 
-        if (eventResult.done) {
-          this.logger.warn('[OpenCode] Event stream ended');
+    this.logger.info('[OpenCode] Listening to event stream...');
+
+    const streamIterator = eventStream.stream[Symbol.asyncIterator]();
+
+    while (!completed) {
+      // 检查超时
+      if (Date.now() - startTime > timeout) {
+        this.logger.warn('[OpenCode] SSE timeout, will use collected text');
+        break;
+      }
+
+      // 等待下一个事件
+      const eventPromise = streamIterator.next();
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('Event timeout')), 5000)
+      );
+
+      let eventResult;
+      try {
+        eventResult = await Promise.race([eventPromise, timeoutPromise]);
+      } catch {
+        // 超时继续等待
+        continue;
+      }
+
+      if (eventResult.done) {
+        this.logger.info('[OpenCode] Event stream ended');
+        break;
+      }
+
+      const event = eventResult.value;
+      eventCount++;
+
+      // 事件格式: { type: string, properties: object }
+      const eventType = (event as { type?: string }).type;
+      const props = (event as { properties?: Record<string, unknown> }).properties || {};
+
+      // 只记录关键事件
+      if (['message.part.updated', 'session.idle', 'session.error', 'permission.updated', 'question.asked'].includes(eventType || '')) {
+        this.logger.debug?.(`[OpenCode] Event ${eventCount}: type=${eventType}`);
+      }
+
+      // 过滤当前 session 的事件
+      const eventSessionId = props.sessionID || (props.info as { sessionID?: string })?.sessionID;
+      if (eventSessionId && eventSessionId !== sessionId) {
+        continue;
+      }
+
+      // 处理不同类型的事件
+      switch (eventType) {
+        // 文本部分更新 - 包含完整文本
+        case 'message.part.updated': {
+          const part = props.part as Record<string, unknown> | undefined;
+          if (!part) break;
+
+          // 文本部分
+          if (part.type === 'text' && part.text) {
+            const partIndex = (part.index as number) ?? 0;
+            const isFinal = part.ignored !== true; // ignored=true 表示这是最终响应
+            textParts[partIndex] = part.text as string;
+            
+            // 只在最终更新时记录
+            if (isFinal) {
+              this.logger.info(`[OpenCode] Text part ${partIndex}: ${(part.text as string).slice(0, 100)}...`);
+            }
+
+            // 如果配置了显示文本输出，推送到飞书（仅最终版本）
+            if (progressConfig.showTextOutput && isFinal) {
+              const chatId = this.sessionManager.getActiveContext()?.chatId || '';
+              const channel = this.channels.get(this.sessionManager.getActiveContext()?.channelId || '');
+              if (channel && chatId) {
+                await channel.outbound.sendText(chatId, part.text as string);
+              }
+            }
+          }
+
+          // 工具执行状态
+          if (part.type === 'tool' && progressConfig.showToolStatus) {
+            const state = part.state as { status?: string } | undefined;
+            const toolName = (part.tool || part.name || 'unknown') as string;
+            const chatId = this.sessionManager.getActiveContext()?.chatId || '';
+            const channel = this.channels.get(this.sessionManager.getActiveContext()?.channelId || '');
+
+            if (channel && chatId && state) {
+              if (state.status === 'running') {
+                await channel.outbound.sendText(chatId, `🔄 执行工具: ${toolName}`);
+              } else if (state.status === 'completed') {
+                await channel.outbound.sendText(chatId, `✅ 完成: ${toolName}`);
+              } else if (state.status === 'error') {
+                await channel.outbound.sendText(chatId, `❌ 失败: ${toolName}`);
+              }
+            }
+          }
           break;
         }
 
-        const event = eventResult.value;
-
-        // 过滤当前 session 的事件
-        const eventPayload = event as { type: string; properties?: Record<string, unknown> };
-        const props = eventPayload.properties || {};
-        const eventSessionId = props.sessionID || (props.info as { sessionID?: string })?.sessionID;
-
-        if (eventSessionId && eventSessionId !== sessionId) {
-          continue;
+        // 会话空闲 - 任务完成
+        case 'session.idle': {
+          this.logger.info('[OpenCode] Session idle, task completed');
+          completed = true;
+          break;
         }
 
-        // 处理不同类型的事件
-        switch (eventPayload.type) {
-          case 'message.part.updated': {
-            const part = props.part as Record<string, unknown>;
-            if (!part) break;
+        // 会话错误
+        case 'session.error': {
+          const error = props.error as { message?: string } | undefined;
+          throw new Error(error?.message || 'Session error');
+        }
 
-            // 文本部分
-            if (part.type === 'text' && !part.ignored && part.text) {
-              textParts.push(part.text as string);
+        // 权限请求
+        case 'permission.updated': {
+          await this.handlePermissionEvent(props);
+          break;
+        }
 
-              // 如果配置了显示文本输出，推送到飞书
-              if (progressConfig.enabled && progressConfig.showTextOutput) {
-                const channel = this.channels.get(this.sessionManager.getActiveContext()?.channelId || '');
-                if (channel) {
-                  await channel.outbound.sendText(this.sessionManager.getActiveContext()?.chatId || '', part.text as string);
-                }
-              }
-            }
-
-            // 工具执行状态
-            if (part.type === 'tool' && progressConfig.enabled && progressConfig.showToolStatus) {
-              const state = part.state as { status: string; input?: Record<string, unknown> } | undefined;
-              const toolName = part.tool || part.name || 'unknown';
-              const channel = this.channels.get(this.sessionManager.getActiveContext()?.channelId || '');
-              const chatId = this.sessionManager.getActiveContext()?.chatId || '';
-
-              if (channel && chatId && state) {
-                if (state.status === 'running') {
-                  await channel.outbound.sendText(chatId, `🔄 执行工具: ${toolName}`);
-                } else if (state.status === 'completed') {
-                  await channel.outbound.sendText(chatId, `✅ 完成: ${toolName}`);
-                } else if (state.status === 'error') {
-                  await channel.outbound.sendText(chatId, `❌ 失败: ${toolName}`);
-                }
-              }
-            }
-            break;
-          }
-
-          case 'session.idle': {
-            // 会话空闲，任务完成
-            this.logger.info('[OpenCode] Session idle, task completed');
-            completed = true;
-            break;
-          }
-
-          case 'session.error': {
-            const error = props.error as { message?: string } | undefined;
-            throw new Error(error?.message || 'Session error');
-          }
-
-          case 'permission.updated': {
-            // 权限请求 - 推送飞书卡片让用户确认
-            this.logger.info(`[OpenCode] Permission request received`);
-            const permission = props as {
-              id: string;
-              sessionID: string;
-              title: string;
-              type: string;
-              metadata?: Record<string, unknown>;
-            };
-
-            const channel = this.channels.get(this.sessionManager.getActiveContext()?.channelId || '');
-            const chatId = this.sessionManager.getActiveContext()?.chatId || '';
-
-            if (channel && chatId && channel.outbound.sendCard) {
-              // 构建权限确认卡片
-              const card = new FeishuCardBuilder()
-                .setHeader('🔐 权限请求', 'orange')
-                .addMarkdown(`**${permission.title || '需要您的确认'}**\n\n类型: ${permission.type || '未知'}`)
-                .addActionRow(
-                  new ActionBuilder()
-                    .addPrimaryButton('✅ 允许', createFeishuCardInteractionEnvelope({
-                      kind: 'button',
-                      action: 'opencode.permission.reply',
-                      args: {
-                        permissionId: permission.id,
-                        sessionId: permission.sessionID,
-                        response: 'allow',
-                      },
-                    }))
-                    .addDangerButton('❌ 拒绝', createFeishuCardInteractionEnvelope({
-                      kind: 'button',
-                      action: 'opencode.permission.reply',
-                      args: {
-                        permissionId: permission.id,
-                        sessionId: permission.sessionID,
-                        response: 'deny',
-                      },
-                    }))
-                    .build()
-                )
-                .build();
-
-              await channel.outbound.sendCard(chatId, card);
-              this.logger.info(`[OpenCode] Permission card sent to ${chatId}`);
-            }
-            break;
-          }
-
-          case 'question.asked': {
-            // 问题请求 - 推送飞书卡片让用户选择
-            this.logger.info(`[OpenCode] Question request received`);
-            const questionRequest = props as {
-              id: string;
-              sessionID: string;
-              questions: Array<{
-                question: string;
-                header: string;
-                options: Array<{ label: string; description: string }>;
-                multiple?: boolean;
-              }>;
-            };
-
-            const channel = this.channels.get(this.sessionManager.getActiveContext()?.channelId || '');
-            const chatId = this.sessionManager.getActiveContext()?.chatId || '';
-
-            if (channel && chatId && channel.outbound.sendCard && questionRequest.questions?.length > 0) {
-              const firstQuestion = questionRequest.questions[0];
-              
-              // 构建问题卡片
-              const cardBuilder = new FeishuCardBuilder()
-                .setHeader('❓ ' + (firstQuestion.header || '问题'), 'blue')
-                .addMarkdown(`**${firstQuestion.question || '请选择'}**`);
-
-              // 构建选项按钮
-              const actionBuilder = new ActionBuilder();
-              for (const option of firstQuestion.options || []) {
-                actionBuilder.addButton(option.label, 'default', createFeishuCardInteractionEnvelope({
-                  kind: 'button',
-                  action: 'opencode.question.reply',
-                  args: {
-                    requestId: questionRequest.id,
-                    sessionId: questionRequest.sessionID,
-                    answerJson: JSON.stringify([[option.label]]),
-                  },
-                }));
-              }
-
-              // 添加拒绝按钮
-              actionBuilder.addDangerButton('跳过', createFeishuCardInteractionEnvelope({
-                kind: 'button',
-                action: 'opencode.question.reject',
-                args: {
-                  requestId: questionRequest.id,
-                  sessionId: questionRequest.sessionID,
-                },
-              }));
-
-              cardBuilder.addActionRow(actionBuilder.build());
-              const card = cardBuilder.build();
-
-              await channel.outbound.sendCard(chatId, card);
-              this.logger.info(`[OpenCode] Question card sent to ${chatId}`);
-            }
-            break;
-          }
+        // 问题请求
+        case 'question.asked': {
+          await this.handleQuestionEvent(props);
+          break;
         }
       }
+    }
 
-      // 5. 返回收集的文本
-      const response = textParts.join('\n\n') || null;
-      this.logger.info(`[OpenCode] Final response: ${response?.slice(0, 200) || '(empty)'}`);
+    // 4. 等待 prompt 完成（确保没有遗漏）
+    try {
+      await Promise.race([
+        promptPromise,
+        new Promise((_, reject) => setTimeout(() => reject(new Error('Prompt timeout')), 3000))
+      ]);
+    } catch {
+      // 忽略，已经通过事件流获取了响应
+    }
 
-      return response;
+    // 5. 返回收集的文本
+    const responseParts = Object.keys(textParts)
+      .sort((a, b) => Number(a) - Number(b))
+      .map(k => textParts[Number(k)]);
+    
+    const response = responseParts.join('\n\n') || null;
+    this.logger.info(`[OpenCode] SSE mode completed: events=${eventCount}, textParts=${responseParts.length}`);
 
-    } catch (error) {
-      this.logger.error(`[OpenCode] Error: ${(error as Error).message}`);
-      throw error;
+    return response;
+  }
+
+  /**
+   * 同步模式 - 直接使用 session.prompt
+   */
+  private async callOpenCodeSync(
+    sessionId: string,
+    body: Record<string, unknown>
+  ): Promise<string | null> {
+    this.logger.info('[OpenCode] Using sync mode...');
+
+    const result = await this.opencodeClient.session.prompt({
+      path: { id: sessionId },
+      body,
+    });
+
+    this.logger.info('[OpenCode] Prompt completed, parsing response...');
+
+    // 按照官方文档，响应结构是 { info, parts }
+    const data = result?.data;
+    
+    if (data?.parts && Array.isArray(data.parts)) {
+      const textParts = data.parts
+        .filter((p: { type: string }) => p.type === 'text')
+        .map((p: { text: string }) => p.text)
+        .join('\n');
+      if (textParts) {
+        this.logger.info(`[OpenCode] Response: ${textParts.slice(0, 200)}...`);
+        return textParts;
+      }
+    }
+
+    this.logger.warn('[OpenCode] No text response found');
+    return null;
+  }
+
+  /**
+   * 处理权限事件
+   */
+  private async handlePermissionEvent(props: Record<string, unknown>): Promise<void> {
+    this.logger.info('[OpenCode] Permission request received');
+    
+    const permission = props as {
+      id?: string;
+      sessionID?: string;
+      title?: string;
+      type?: string;
+    };
+
+    const chatId = this.sessionManager.getActiveContext()?.chatId || '';
+    const channel = this.channels.get(this.sessionManager.getActiveContext()?.channelId || '');
+
+    if (channel && chatId && channel.outbound.sendCard && permission.id) {
+      const card = new FeishuCardBuilder()
+        .setHeader('🔐 权限请求', 'orange')
+        .addMarkdown(`**${permission.title || '需要您的确认'}**\n\n类型: ${permission.type || '未知'}`)
+        .addActionRow(
+          new ActionBuilder()
+            .addPrimaryButton('✅ 允许', createFeishuCardInteractionEnvelope({
+              kind: 'button',
+              action: 'opencode.permission.reply',
+              args: {
+                permissionId: permission.id,
+                sessionId: permission.sessionID,
+                response: 'allow',
+              },
+            }))
+            .addDangerButton('❌ 拒绝', createFeishuCardInteractionEnvelope({
+              kind: 'button',
+              action: 'opencode.permission.reply',
+              args: {
+                permissionId: permission.id,
+                sessionId: permission.sessionID,
+                response: 'deny',
+              },
+            }))
+            .build()
+        )
+        .build();
+
+      await channel.outbound.sendCard(chatId, card);
+      this.logger.info(`[OpenCode] Permission card sent to ${chatId}`);
+    }
+  }
+
+  /**
+   * 处理问题事件
+   */
+  private async handleQuestionEvent(props: Record<string, unknown>): Promise<void> {
+    this.logger.info('[OpenCode] Question request received');
+    
+    const questionRequest = props as {
+      id?: string;
+      sessionID?: string;
+      questions?: Array<{
+        question?: string;
+        header?: string;
+        options?: Array<{ label: string; description?: string }>;
+        multiple?: boolean;
+      }>;
+    };
+
+    const chatId = this.sessionManager.getActiveContext()?.chatId || '';
+    const channel = this.channels.get(this.sessionManager.getActiveContext()?.channelId || '');
+
+    if (channel && chatId && channel.outbound.sendCard && questionRequest.questions?.length && questionRequest.id) {
+      const firstQuestion = questionRequest.questions[0];
+      
+      const cardBuilder = new FeishuCardBuilder()
+        .setHeader('❓ ' + (firstQuestion.header || '问题'), 'blue')
+        .addMarkdown(`**${firstQuestion.question || '请选择'}**`);
+
+      const actionBuilder = new ActionBuilder();
+      for (const option of firstQuestion.options || []) {
+        actionBuilder.addButton(option.label, 'default', createFeishuCardInteractionEnvelope({
+          kind: 'button',
+          action: 'opencode.question.reply',
+          args: {
+            requestId: questionRequest.id,
+            sessionId: questionRequest.sessionID,
+            answerJson: JSON.stringify([[option.label]]),
+          },
+        }));
+      }
+
+      actionBuilder.addDangerButton('跳过', createFeishuCardInteractionEnvelope({
+        kind: 'button',
+        action: 'opencode.question.reject',
+        args: {
+          requestId: questionRequest.id,
+          sessionId: questionRequest.sessionID,
+        },
+      }));
+
+      cardBuilder.addActionRow(actionBuilder.build());
+      
+      await channel.outbound.sendCard(chatId, cardBuilder.build());
+      this.logger.info(`[OpenCode] Question card sent to ${chatId}`);
     }
   }
 

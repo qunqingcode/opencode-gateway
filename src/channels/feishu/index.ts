@@ -54,6 +54,7 @@ export class FeishuChannel implements ChannelPlugin {
   private logger: Logger;
   private messageHandler: MessageHandler | null = null;
   private interactionHandler: InteractionHandler | null = null;
+  private _outbound: OutboundAdapter | null = null;
 
   constructor(config: FeishuChannelConfig, logger: Logger) {
     this.id = config.id;
@@ -73,28 +74,52 @@ export class FeishuChannel implements ChannelPlugin {
       verificationToken: config.verificationToken,
       botNames: config.botNames,
     }, logger);
+
+    // 初始化 outbound adapter
+    this._outbound = {
+      sendText: async (chatId: string, text: string, options?: { replyTo?: string }) => {
+        this.logger.info(`[FeishuChannel] sendText to ${chatId}: ${text?.slice(0, 100)}...`);
+        try {
+          const result = await this.client.sendText(chatId, text, options?.replyTo);
+          this.logger.info(`[FeishuChannel] sendText result: ok=${result.ok}, error=${result.error || 'none'}`);
+          return { ok: result.ok, messageId: result.messageId };
+        } catch (err) {
+          this.logger.error(`[FeishuChannel] sendText error: ${(err as Error).message}`);
+          return { ok: false };
+        }
+      },
+
+      sendCard: async (chatId: string, card: unknown) => {
+        this.logger.info(`[FeishuChannel] sendCard to ${chatId}`);
+        try {
+          const result = await this.client.sendCard(chatId, card);
+          this.logger.info(`[FeishuChannel] sendCard result: ok=${result.ok}, error=${result.error || 'none'}`);
+          return { ok: result.ok, messageId: result.messageId };
+        } catch (err) {
+          this.logger.error(`[FeishuChannel] sendCard error: ${(err as Error).message}`);
+          return { ok: false };
+        }
+      },
+
+      sendMedia: async (chatId: string, media: { url: string }, text?: string) => {
+        try {
+          const result = await this.client.sendMedia(chatId, media.url, text);
+          return { ok: result.ok, messageId: result.messageId };
+        } catch (err) {
+          this.logger.error(`[FeishuChannel] sendMedia error: ${(err as Error).message}`);
+          return { ok: false };
+        }
+      },
+    };
   }
 
   // ============================================================
   // Outbound Adapter
   // ============================================================
 
-  readonly outbound: OutboundAdapter = {
-    sendText: async (chatId, text, options) => {
-      const result = await this.client.sendText(chatId, text, options?.replyTo);
-      return { ok: result.ok, messageId: result.messageId };
-    },
-
-    sendCard: async (chatId, card) => {
-      const result = await this.client.sendCard(chatId, card);
-      return { ok: result.ok, messageId: result.messageId };
-    },
-
-    sendMedia: async (chatId, media, text) => {
-      const result = await this.client.sendMedia(chatId, media.url, text);
-      return { ok: result.ok, messageId: result.messageId };
-    },
-  };
+  get outbound(): OutboundAdapter {
+    return this._outbound!;
+  }
 
   // ============================================================
   // Lifecycle Adapter
