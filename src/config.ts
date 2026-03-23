@@ -110,6 +110,11 @@ export function buildConfig(): GatewayConfig {
       timeout: getEnvNumber('OPENCODE_TIMEOUT', 600000),
       modelId: getEnvString('OPENCODE_MODEL_ID'),
       providerId: getEnvString('OPENCODE_PROVIDER_ID'),
+      progress: {
+        enabled: getEnvString('OPENCODE_PROGRESS_ENABLED', 'false') === 'true',
+        showToolStatus: getEnvString('OPENCODE_PROGRESS_TOOL_STATUS', 'false') === 'true',
+        showTextOutput: getEnvString('OPENCODE_PROGRESS_TEXT_OUTPUT', 'false') === 'true',
+      },
     },
     queue: DEFAULT_QUEUE_CONFIG,
   };

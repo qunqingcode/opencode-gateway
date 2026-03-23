@@ -261,6 +261,15 @@ export interface GatewayConfig {
     timeout: number;
     modelId?: string;
     providerId?: string;
+    /** 进度通知配置 */
+    progress?: {
+      /** 是否启用进度通知（默认 false，只保证不卡死） */
+      enabled?: boolean;
+      /** 是否推送工具执行状态（默认 false） */
+      showToolStatus?: boolean;
+      /** 是否推送文本输出（默认 false） */
+      showTextOutput?: boolean;
+    };
   };
   /** 队列配置 */
   queue: {
