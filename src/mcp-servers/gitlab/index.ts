@@ -146,6 +146,7 @@ export class GitLabMCPServer extends BaseMCPServer {
           });
 
           const card = new FeishuCardBuilder()
+            .setConfig({ wide_screen_mode: true, update_multi: true }) // 允许卡片更新
             .setHeader('🔀 创建 MR 确认', 'blue')
             .addMarkdown(content)
             .addActionRow(new ActionBuilder()
@@ -180,18 +181,42 @@ export class GitLabMCPServer extends BaseMCPServer {
           required: ['sourceBranch', 'targetBranch', 'title'],
         },
         execute: async (args) => {
-          const mr = await this.provider.createMergeRequest(
-            args.sourceBranch as string,
-            args.targetBranch as string,
-            args.title as string
-          );
-          return {
-            success: true,
-            output: {
-              message: `MR 创建成功`,
-              url: mr.url,
-            },
-          };
+          try {
+            const mr = await this.provider.createMergeRequest(
+              args.sourceBranch as string,
+              args.targetBranch as string,
+              args.title as string
+            );
+
+            // 返回成功状态卡片
+            const successCard = new FeishuCardBuilder()
+              .setConfig({ wide_screen_mode: true, update_multi: true })
+              .setHeader('✅ MR 创建成功', 'green')
+              .addMarkdown(`**标题**: ${args.title}\n**源分支**: \`${args.sourceBranch}\`\n**目标分支**: \`${args.targetBranch}\`\n**链接**: [查看 MR](${mr.url})`)
+              .build();
+
+            return {
+              success: true,
+              output: {
+                message: `MR 创建成功`,
+                url: mr.url,
+              },
+              approvalCard: successCard,
+            };
+          } catch (error) {
+            // 返回失败状态卡片
+            const errorCard = new FeishuCardBuilder()
+              .setConfig({ wide_screen_mode: true, update_multi: true })
+              .setHeader('❌ MR 创建失败', 'red')
+              .addMarkdown(`**错误**: ${(error as Error).message}\n**标题**: ${args.title}\n**源分支**: \`${args.sourceBranch}\`\n**目标分支**: \`${args.targetBranch}\``)
+              .build();
+
+            return {
+              success: false,
+              error: (error as Error).message,
+              approvalCard: errorCard,
+            };
+          }
         },
       }),
 
@@ -227,8 +252,22 @@ export class GitLabMCPServer extends BaseMCPServer {
           type: 'object',
           properties: {},
         },
-        execute: async () => {
-          return { success: true, output: '操作已取消' };
+        execute: async (_args, context: ToolContext) => {
+          // 发送取消消息给用户
+          await context.sendText('❌ 操作已取消');
+          
+          // 返回更新后的卡片（不带按钮，显示已取消状态）
+          const cancelledCard = new FeishuCardBuilder()
+            .setConfig({ wide_screen_mode: true, update_multi: true })
+            .setHeader('❌ 已取消', 'grey')
+            .addMarkdown('操作已被用户取消')
+            .build();
+          
+          return { 
+            success: true, 
+            output: '操作已取消',
+            approvalCard: cancelledCard, // 用于更新原卡片
+          };
         },
       }),
     ];

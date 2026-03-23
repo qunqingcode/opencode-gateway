@@ -174,6 +174,7 @@ export class WorkflowMCPServer extends BaseMCPServer {
           });
 
           const card = new FeishuCardBuilder()
+            .setConfig({ wide_screen_mode: true, update_multi: true }) // 允许卡片更新
             .setHeader('🔄 合并 MR 并关闭 Bug', 'blue')
             .addMarkdown(content)
             .addActionRow(new ActionBuilder()
@@ -229,9 +230,18 @@ export class WorkflowMCPServer extends BaseMCPServer {
               status: 'error',
               message: `合并失败: ${(error as Error).message}`,
             });
+
+            // 返回失败状态卡片
+            const errorCard = new FeishuCardBuilder()
+              .setConfig({ wide_screen_mode: true, update_multi: true })
+              .setHeader('❌ 工作流执行失败', 'red')
+              .addMarkdown(`**MR ID**: !${mrId}\n**Bug ID**: #${bugId}\n\n**错误**: MR 合并失败\n\n${results.map(r => `- ${r.step}: ${r.message}`).join('\n')}`)
+              .build();
+
             return {
               success: false,
               output: { results, error: 'MR 合并失败，工作流终止' },
+              approvalCard: errorCard,
             };
           }
 
@@ -270,6 +280,14 @@ export class WorkflowMCPServer extends BaseMCPServer {
           }
 
           const allSuccess = results.every(r => r.status === 'success');
+          const successCount = results.filter(r => r.status === 'success').length;
+
+          // 构建结果状态卡片
+          const resultCard = new FeishuCardBuilder()
+            .setConfig({ wide_screen_mode: true, update_multi: true })
+            .setHeader(allSuccess ? '✅ 工作流完成' : '⚠️ 工作流部分完成', allSuccess ? 'green' : 'orange')
+            .addMarkdown(`**MR ID**: !${mrId}\n**Bug ID**: #${bugId}\n\n**执行结果** (${successCount}/${results.length}):\n\n${results.map(r => `- ${r.status === 'success' ? '✅' : '❌'} ${r.step}: ${r.message}`).join('\n')}`)
+            .build();
 
           return {
             success: allSuccess,
@@ -281,6 +299,7 @@ export class WorkflowMCPServer extends BaseMCPServer {
               mrId,
               bugId,
             },
+            approvalCard: resultCard,
           };
         },
       }),
@@ -346,6 +365,7 @@ export class WorkflowMCPServer extends BaseMCPServer {
           });
 
           const card = new FeishuCardBuilder()
+            .setConfig({ wide_screen_mode: true, update_multi: true }) // 允许卡片更新
             .setHeader('🔧 为 Bug 创建修复 MR', 'blue')
             .addMarkdown(content)
             .addActionRow(new ActionBuilder()
@@ -405,9 +425,18 @@ export class WorkflowMCPServer extends BaseMCPServer {
               status: 'error',
               message: `创建失败: ${(error as Error).message}`,
             });
+
+            // 返回失败状态卡片
+            const errorCard = new FeishuCardBuilder()
+              .setConfig({ wide_screen_mode: true, update_multi: true })
+              .setHeader('❌ 创建修复 MR 失败', 'red')
+              .addMarkdown(`**Bug ID**: #${bugId}\n**分支**: ${branchName}\n\n**错误**: 分支创建失败\n\n${results.map(r => `- ${r.step}: ${r.message}`).join('\n')}`)
+              .build();
+
             return {
               success: false,
               output: { results, error: '分支创建失败' },
+              approvalCard: errorCard,
             };
           }
 
@@ -452,6 +481,14 @@ export class WorkflowMCPServer extends BaseMCPServer {
           }
 
           const allSuccess = results.every(r => r.status === 'success');
+          const successCount = results.filter(r => r.status === 'success').length;
+
+          // 构建结果状态卡片
+          const resultCard = new FeishuCardBuilder()
+            .setConfig({ wide_screen_mode: true, update_multi: true })
+            .setHeader(allSuccess ? '✅ 修复 MR 创建成功' : '⚠️ 部分操作失败', allSuccess ? 'green' : 'orange')
+            .addMarkdown(`**Bug ID**: #${bugId}\n**分支**: \`${branchName}\`\n**目标**: \`${targetBranch}\`\n**MR 标题**: ${title}\n\n**执行结果** (${successCount}/${results.length}):\n\n${results.map(r => `- ${r.status === 'success' ? '✅' : '❌'} ${r.step}: ${r.message}`).join('\n')}`)
+            .build();
 
           return {
             success: allSuccess,
@@ -463,6 +500,7 @@ export class WorkflowMCPServer extends BaseMCPServer {
               branchName,
               bugId,
             },
+            approvalCard: resultCard,
           };
         },
       }),
@@ -538,8 +576,22 @@ export class WorkflowMCPServer extends BaseMCPServer {
           type: 'object',
           properties: {},
         },
-        execute: async () => {
-          return { success: true, output: '操作已取消' };
+        execute: async (_args, context: ToolContext) => {
+          // 发送取消消息给用户
+          await context.sendText('❌ 操作已取消');
+          
+          // 返回更新后的卡片（不带按钮，显示已取消状态）
+          const cancelledCard = new FeishuCardBuilder()
+            .setConfig({ wide_screen_mode: true, update_multi: true })
+            .setHeader('❌ 已取消', 'grey')
+            .addMarkdown('操作已被用户取消')
+            .build();
+          
+          return { 
+            success: true, 
+            output: '操作已取消',
+            approvalCard: cancelledCard, // 用于更新原卡片
+          };
         },
       }),
     ];

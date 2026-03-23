@@ -143,6 +143,7 @@ export class ZentaoMCPServer extends BaseMCPServer {
           });
 
           const card = new FeishuCardBuilder()
+            .setConfig({ wide_screen_mode: true, update_multi: true }) // 允许卡片更新
             .setHeader('🐛 创建 Bug 确认', 'purple')
             .addMarkdown(content)
             .addActionRow(new ActionBuilder()
@@ -178,20 +179,44 @@ export class ZentaoMCPServer extends BaseMCPServer {
           required: ['title'],
         },
         execute: async (args) => {
-          const issue = await this.provider.createIssue({
-            title: args.title as string,
-            description: args.description as string,
-            priority: args.priority as 'critical' | 'high' | 'medium' | 'low',
-            type: args.type as 'bug' | 'task' | 'feature' | 'story',
-            assignee: args.assignee as string,
-          });
-          return {
-            success: true,
-            output: {
-              message: `Bug #${issue.id} 创建成功`,
-              issue,
-            },
-          };
+          try {
+            const issue = await this.provider.createIssue({
+              title: args.title as string,
+              description: args.description as string,
+              priority: args.priority as 'critical' | 'high' | 'medium' | 'low',
+              type: args.type as 'bug' | 'task' | 'feature' | 'story',
+              assignee: args.assignee as string,
+            });
+
+            // 返回成功状态卡片
+            const successCard = new FeishuCardBuilder()
+              .setConfig({ wide_screen_mode: true, update_multi: true })
+              .setHeader('✅ Bug 创建成功', 'green')
+              .addMarkdown(`**Bug ID**: #${issue.id}\n**标题**: ${args.title}\n**优先级**: ${args.priority || '中'}\n**类型**: ${args.type || 'bug'}`)
+              .build();
+
+            return {
+              success: true,
+              output: {
+                message: `Bug #${issue.id} 创建成功`,
+                issue,
+              },
+              approvalCard: successCard,
+            };
+          } catch (error) {
+            // 返回失败状态卡片
+            const errorCard = new FeishuCardBuilder()
+              .setConfig({ wide_screen_mode: true, update_multi: true })
+              .setHeader('❌ Bug 创建失败', 'red')
+              .addMarkdown(`**错误**: ${(error as Error).message}\n**标题**: ${args.title}`)
+              .build();
+
+            return {
+              success: false,
+              error: (error as Error).message,
+              approvalCard: errorCard,
+            };
+          }
         },
       }),
 
@@ -230,6 +255,7 @@ export class ZentaoMCPServer extends BaseMCPServer {
           });
 
           const card = new FeishuCardBuilder()
+            .setConfig({ wide_screen_mode: true, update_multi: true }) // 允许卡片更新
             .setHeader('✅ 关闭 Bug 确认', 'green')
             .addMarkdown(content)
             .addActionRow(new ActionBuilder()
@@ -261,8 +287,35 @@ export class ZentaoMCPServer extends BaseMCPServer {
           required: ['bugId'],
         },
         execute: async (args) => {
-          await this.provider.closeIssue(args.bugId as number);
-          return { success: true, output: `Bug #${args.bugId} 已关闭` };
+          try {
+            await this.provider.closeIssue(args.bugId as number);
+
+            // 返回成功状态卡片
+            const successCard = new FeishuCardBuilder()
+              .setConfig({ wide_screen_mode: true, update_multi: true })
+              .setHeader('✅ Bug 已关闭', 'green')
+              .addMarkdown(`**Bug ID**: #${args.bugId}\n\nBug 已成功关闭`)
+              .build();
+
+            return {
+              success: true,
+              output: `Bug #${args.bugId} 已关闭`,
+              approvalCard: successCard,
+            };
+          } catch (error) {
+            // 返回失败状态卡片
+            const errorCard = new FeishuCardBuilder()
+              .setConfig({ wide_screen_mode: true, update_multi: true })
+              .setHeader('❌ Bug 关闭失败', 'red')
+              .addMarkdown(`**错误**: ${(error as Error).message}\n**Bug ID**: #${args.bugId}`)
+              .build();
+
+            return {
+              success: false,
+              error: (error as Error).message,
+              approvalCard: errorCard,
+            };
+          }
         },
       }),
 
@@ -293,8 +346,22 @@ export class ZentaoMCPServer extends BaseMCPServer {
           type: 'object',
           properties: {},
         },
-        execute: async () => {
-          return { success: true, output: '操作已取消' };
+        execute: async (_args, context: ToolContext) => {
+          // 发送取消消息给用户
+          await context.sendText('❌ 操作已取消');
+          
+          // 返回更新后的卡片（不带按钮，显示已取消状态）
+          const cancelledCard = new FeishuCardBuilder()
+            .setConfig({ wide_screen_mode: true, update_multi: true })
+            .setHeader('❌ 已取消', 'grey')
+            .addMarkdown('操作已被用户取消')
+            .build();
+          
+          return { 
+            success: true, 
+            output: '操作已取消',
+            approvalCard: cancelledCard, // 用于更新原卡片
+          };
         },
       }),
     ];
