@@ -8,14 +8,14 @@ import { BaseMCPServer } from '../base';
 import { createTool, ToolDefinition } from '../types';
 import type { ToolContext } from '../../gateway/types';
 import type { Logger } from '../../channels/types';
-import { GitLabProvider } from '../../providers/gitlab';
+import { GitLabClient, GitLabClientConfig } from '../../api/gitlab';
 import {
   FeishuCardBuilder,
   ActionBuilder,
   createFeishuCardInteractionEnvelope,
   buildFeishuCardInteractionContext,
   FEISHU_CARD_DEFAULT_TTL_MS,
-} from '../../providers/feishu/card';
+} from '../../api/feishu/card';
 
 // ============================================================
 // 配置
@@ -35,16 +35,12 @@ export class GitLabMCPServer extends BaseMCPServer {
   readonly name = 'gitlab';
   readonly description = 'GitLab 代码仓库工具';
 
-  private provider: GitLabProvider;
+  private client: GitLabClient;
 
   constructor(config: GitLabMCPServerConfig, logger: Logger) {
     super(config as unknown as Record<string, unknown>, logger);
 
-    this.provider = new GitLabProvider({
-      id: 'gitlab-mcp',
-      type: 'vcs',
-      enabled: true,
-      capabilities: ['repository'],
+    this.client = new GitLabClient({
       apiUrl: config.baseUrl,
       token: config.token,
       projectId: String(config.projectId),
@@ -70,7 +66,7 @@ export class GitLabMCPServer extends BaseMCPServer {
           },
         },
         execute: async (args) => {
-          const branches = await this.provider.getBranches?.();
+          const branches = await this.client.getBranches?.();
           if (!branches) {
             return { success: false, error: '获取分支列表失败' };
           }
@@ -182,7 +178,7 @@ export class GitLabMCPServer extends BaseMCPServer {
         },
         execute: async (args) => {
           try {
-            const mr = await this.provider.createMergeRequest(
+            const mr = await this.client.createMergeRequest(
               args.sourceBranch as string,
               args.targetBranch as string,
               args.title as string
@@ -232,7 +228,7 @@ export class GitLabMCPServer extends BaseMCPServer {
           required: ['name'],
         },
         execute: async (args) => {
-          const branch = await this.provider.createBranch?.(
+          const branch = await this.client.createBranch?.(
             args.name as string,
             args.ref as string
           );
@@ -278,7 +274,6 @@ export class GitLabMCPServer extends BaseMCPServer {
   // ============================================================
 
   async start(): Promise<void> {
-    await this.provider.start();
     await super.start();
   }
 

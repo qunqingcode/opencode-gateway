@@ -5,6 +5,11 @@
  * 职责：统一不同消息平台的接口
  */
 
+import type { Logger } from '../types';
+
+// 重新导出 Logger
+export type { Logger } from '../types';
+
 // ============================================================
 // 基础类型
 // ============================================================
@@ -210,11 +215,3 @@ export type ChannelFactory<TConfig extends ChannelConfig = ChannelConfig> = (
   config: TConfig,
   logger: Logger
 ) => ChannelPlugin;
-
-/** 日志接口 */
-export interface Logger {
-  info(message: string, ...args: unknown[]): void;
-  warn(message: string, ...args: unknown[]): void;
-  error(message: string, ...args: unknown[]): void;
-  debug?(message: string, ...args: unknown[]): void;
-}

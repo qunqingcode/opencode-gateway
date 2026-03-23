@@ -4,15 +4,16 @@
 
 ## 概述
 
-OpenCode Gateway 是一个三层架构的飞书 AI 智能体网关：
+OpenCode Gateway 是一个三层架构的 MCP Bridge：
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                    OpenCode Gateway                         │
 ├─────────────────────────────────────────────────────────────┤
-│  Layer 1: Channels    │ 飞书消息收发、卡片交互               │
-│  Layer 2: Gateway     │ Session 管理、MCP 工具调度          │
-│  Layer 3: MCP Servers │ 禅道、GitLab 等原子能力              │
+│  Gateway 层  │ Session 管理、消息路由、MCP 工具调度          │
+│  Channel 层  │ 飞书消息收发、卡片交互、消息格式转换           │
+│  MCP 层      │ 禅道、GitLab、Workflow 等工具定义             │
+│  API 层      │ 飞书、GitLab、禅道 API 封装                   │
 └─────────────────────────────────────────────────────────────┘
                               ▲
                               │ HTTP (MCP Protocol)
@@ -414,5 +415,5 @@ export class MyToolMCPServer extends BaseMCPServer {
 
 ---
 
-**版本**: 3.0.0  
-**更新日期**: 2026-03-20
+**版本**: 3.1.0  
+**更新日期**: 2026-03-23

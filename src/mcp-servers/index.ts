@@ -38,6 +38,9 @@ export type { GitLabMCPServerConfig } from './gitlab';
 export { WorkflowMCPServer, createWorkflowMCPServer } from './workflow';
 export type { WorkflowMCPServerConfig } from './workflow';
 
+export { StdioMCPServer, createStdioMCPServer } from './stdio';
+export type { StdioMCPServerConfig } from './stdio';
+
 // ============================================================
 // Server Registry
 // ============================================================
@@ -47,6 +50,7 @@ import type { Logger } from '../channels/types';
 import { createZentaoMCPServer, ZentaoMCPServerConfig } from './zentao';
 import { createGitLabMCPServer, GitLabMCPServerConfig } from './gitlab';
 import { createWorkflowMCPServer, WorkflowMCPServerConfig } from './workflow';
+import { createStdioMCPServer, StdioMCPServerConfig } from './stdio';
 
 type ServerFactory = (config: Record<string, unknown>, logger: Logger) => IMCPServer;
 
@@ -61,6 +65,10 @@ serverRegistry.set('gitlab', (config, logger) =>
 );
 serverRegistry.set('workflow', (config, logger) => 
   createWorkflowMCPServer(config as unknown as WorkflowMCPServerConfig, logger)
+);
+// Stdio MCP Server（用于集成官方/第三方 MCP）
+serverRegistry.set('stdio', (config, logger) => 
+  createStdioMCPServer(config as unknown as StdioMCPServerConfig, logger)
 );
 
 /**

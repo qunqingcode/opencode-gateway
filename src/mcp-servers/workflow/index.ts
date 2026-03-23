@@ -1,7 +1,7 @@
 /**
  * Workflow MCP Server
  * 
- * 跨 Provider 的工作流编排工具
+ * 跨平台工作流编排工具
  * 将 GitLab 和禅道操作组合成原子工作流
  */
 
@@ -9,15 +9,15 @@ import { BaseMCPServer } from '../base';
 import { createTool, ToolDefinition } from '../types';
 import type { ToolContext } from '../../gateway/types';
 import type { Logger } from '../../channels/types';
-import { GitLabProvider } from '../../providers/gitlab';
-import { ZentaoProvider } from '../../providers/zentao';
+import { GitLabClient, GitLabClientConfig } from '../../api/gitlab';
+import { ZentaoClient, ZentaoClientConfig } from '../../api/zentao';
 import {
   FeishuCardBuilder,
   ActionBuilder,
   createFeishuCardInteractionEnvelope,
   buildFeishuCardInteractionContext,
   FEISHU_CARD_DEFAULT_TTL_MS,
-} from '../../providers/feishu/card';
+} from '../../api/feishu/card';
 
 // ============================================================
 // 配置
@@ -46,29 +46,21 @@ export class WorkflowMCPServer extends BaseMCPServer {
   readonly name = 'workflow';
   readonly description = '跨平台工作流编排工具（GitLab + 禅道）';
 
-  private gitlabProvider: GitLabProvider;
-  private zentaoProvider: ZentaoProvider;
+  private gitlabClient: GitLabClient;
+  private zentaoClient: ZentaoClient;
 
   constructor(config: WorkflowMCPServerConfig, logger: Logger) {
     super(config as unknown as Record<string, unknown>, logger);
 
-    // 初始化 GitLab Provider
-    this.gitlabProvider = new GitLabProvider({
-      id: 'workflow-gitlab',
-      type: 'vcs',
-      enabled: true,
-      capabilities: ['repository'],
+    // 初始化 GitLab Client
+    this.gitlabClient = new GitLabClient({
       apiUrl: config.gitlab.baseUrl,
       token: config.gitlab.token,
       projectId: String(config.gitlab.projectId),
     }, logger);
 
-    // 初始化禅道 Provider
-    this.zentaoProvider = new ZentaoProvider({
-      id: 'workflow-zentao',
-      type: 'issue',
-      enabled: true,
-      capabilities: ['issues', 'project'],
+    // 初始化禅道 Client
+    this.zentaoClient = new ZentaoClient({
       baseUrl: config.zentao.baseUrl,
       token: config.zentao.token,
       account: config.zentao.account,
@@ -109,7 +101,7 @@ export class WorkflowMCPServer extends BaseMCPServer {
           let bugInfo: { title: string; status: string } | null = null;
 
           try {
-            const mrs = await this.gitlabProvider.getMergeRequests('open');
+            const mrs = await this.gitlabClient.getMergeRequests('open');
             const mr = mrs.find(m => m.id === mrId);
             if (mr) {
               mrInfo = { title: mr.title, url: mr.url, sourceBranch: mr.sourceBranch };
@@ -119,7 +111,7 @@ export class WorkflowMCPServer extends BaseMCPServer {
           }
 
           try {
-            const bug = await this.zentaoProvider.getIssue(bugId);
+            const bug = await this.zentaoClient.getIssue(bugId);
             if (bug) {
               bugInfo = { title: bug.title, status: bug.status };
             }
@@ -218,7 +210,7 @@ export class WorkflowMCPServer extends BaseMCPServer {
           try {
             // Step 1: 合并 MR
             this.logger?.info(`[Workflow] Merging MR !${mrId}...`);
-            const mr = await this.gitlabProvider.mergeMergeRequest(mrId);
+            const mr = await this.gitlabClient.mergeMergeRequest(mrId);
             results.push({
               step: '合并 MR',
               status: 'success',
@@ -248,7 +240,7 @@ export class WorkflowMCPServer extends BaseMCPServer {
           try {
             // Step 2: 添加评论
             const commentText = comment || `已通过 Merge Request !${mrId} 修复此 Bug`;
-            await this.zentaoProvider.addComment(bugId, commentText);
+            await this.zentaoClient.addComment(bugId, commentText);
             results.push({
               step: '添加评论',
               status: 'success',
@@ -265,7 +257,7 @@ export class WorkflowMCPServer extends BaseMCPServer {
           try {
             // Step 3: 关闭 Bug
             this.logger?.info(`[Workflow] Closing Bug #${bugId}...`);
-            await this.zentaoProvider.closeIssue(bugId);
+            await this.zentaoClient.closeIssue(bugId);
             results.push({
               step: '关闭 Bug',
               status: 'success',
@@ -326,7 +318,7 @@ export class WorkflowMCPServer extends BaseMCPServer {
           const title = args.title as string | undefined;
 
           // 获取 Bug 信息
-          const bug = await this.zentaoProvider.getIssue(bugId);
+          const bug = await this.zentaoClient.getIssue(bugId);
           if (!bug) {
             return { success: false, error: `Bug #${bugId} 不存在` };
           }
@@ -413,7 +405,7 @@ export class WorkflowMCPServer extends BaseMCPServer {
           try {
             // Step 1: 创建分支
             this.logger?.info(`[Workflow] Creating branch ${branchName}...`);
-            await this.gitlabProvider.createBranch(branchName, targetBranch);
+            await this.gitlabClient.createBranch(branchName, targetBranch);
             results.push({
               step: '创建分支',
               status: 'success',
@@ -443,7 +435,7 @@ export class WorkflowMCPServer extends BaseMCPServer {
           try {
             // Step 2: 创建 MR
             this.logger?.info(`[Workflow] Creating MR...`);
-            const mr = await this.gitlabProvider.createMergeRequest(
+            const mr = await this.gitlabClient.createMergeRequest(
               branchName,
               targetBranch,
               title
@@ -463,7 +455,7 @@ export class WorkflowMCPServer extends BaseMCPServer {
 
           try {
             // Step 3: 在 Bug 中添加评论记录 MR
-            await this.zentaoProvider.addComment(
+            await this.zentaoClient.addComment(
               bugId,
               `已创建修复分支 ${branchName}，Merge Request: ${title}`
             );
@@ -522,7 +514,7 @@ export class WorkflowMCPServer extends BaseMCPServer {
         execute: async (args) => {
           const mrId = args.mrId as number;
 
-          const mrs = await this.gitlabProvider.getMergeRequests();
+          const mrs = await this.gitlabClient.getMergeRequests();
           const mr = mrs.find(m => m.id === mrId);
 
           if (!mr) {
@@ -544,7 +536,7 @@ export class WorkflowMCPServer extends BaseMCPServer {
 
           // 获取 Bug 详情
           const bugs = await Promise.all(
-            bugIds.map(id => this.zentaoProvider.getIssue(id))
+            bugIds.map(id => this.zentaoClient.getIssue(id))
           );
 
           return {
@@ -602,10 +594,9 @@ export class WorkflowMCPServer extends BaseMCPServer {
   // ============================================================
 
   async start(): Promise<void> {
-    await this.gitlabProvider.start();
-    await this.zentaoProvider.start();
+    await this.zentaoClient.init();
     await super.start();
-    this.logger?.info('[WorkflowMCPServer] Started with GitLab + Zentao providers');
+    this.logger?.info('[WorkflowMCPServer] Started with GitLab + Zentao');
   }
 
   async stop(): Promise<void> {

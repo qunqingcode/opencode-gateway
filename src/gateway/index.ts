@@ -58,8 +58,8 @@ import type {
 import type { ChannelPlugin } from '../channels/types';
 import { SessionManager } from './session';
 import { MCPClient } from './mcp-client';
-import { FeishuCardBuilder, ActionBuilder } from '../providers/feishu/card/card-builder';
-import { createFeishuCardInteractionEnvelope } from '../providers/feishu/card/card-interaction';
+import { FeishuCardBuilder, ActionBuilder } from '../api/feishu/card/card-builder';
+import { createFeishuCardInteractionEnvelope } from '../api/feishu/card/card-interaction';
 
 /** OpenCode SDK 类型 - 使用 any 避免类型冲突 */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any

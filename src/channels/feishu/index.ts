@@ -1,7 +1,9 @@
 /**
  * 飞书 Channel 实现
  * 
- * 将 FeishuProvider 适配为 ChannelPlugin 接口
+ * 参考 OpenClaw 的 Channel Adapter 设计：
+ * - 只做消息格式转换和路由规则
+ * - 不依赖 Provider，直接使用 Client
  */
 
 import type {
@@ -13,10 +15,13 @@ import type {
   OutboundAdapter,
   LifecycleAdapter,
   Logger,
-  MessageSource,
 } from '../types';
 import type { ChannelFactory } from '../types';
-import { FeishuProvider, FeishuConfig } from '../../providers/feishu';
+import {
+  FeishuClient,
+  createFeishuApiClient,
+  type FeishuConfig,
+} from '../../api/feishu';
 
 // ============================================================
 // 飞书配置
@@ -24,27 +29,15 @@ import { FeishuProvider, FeishuConfig } from '../../providers/feishu';
 
 export interface FeishuChannelConfig extends ChannelConfig {
   type: 'feishu';
-  /** 渠道名称 */
   name?: string;
-  /** 飞书 App ID */
   appId: string;
-  /** 飞书 App Secret */
   appSecret: string;
-  /** 连接模式 */
   connectionMode?: 'websocket' | 'webhook';
-  /** 域名 */
   domain?: 'feishu' | 'lark';
-  /** Webhook 端口 */
   webhookPort?: number;
-  /** Webhook 路径 */
   webhookPath?: string;
-  /** 加密 Key */
   encryptKey?: string;
-  /** 验证 Token */
   verificationToken?: string;
-  /** 思考阈值 */
-  thinkingThresholdMs?: number;
-  /** 机器人名称 */
   botNames?: string[];
 }
 
@@ -57,7 +50,7 @@ export class FeishuChannel implements ChannelPlugin {
   readonly type = 'feishu' as const;
   readonly name: string;
 
-  private provider: FeishuProvider;
+  private client: FeishuClient;
   private logger: Logger;
   private messageHandler: MessageHandler | null = null;
   private interactionHandler: InteractionHandler | null = null;
@@ -67,13 +60,9 @@ export class FeishuChannel implements ChannelPlugin {
     this.name = config.name ?? 'Feishu';
     this.logger = logger;
 
-    // 创建底层 Provider
-    this.provider = new FeishuProvider({
+    // 创建底层 Client
+    this.client = createFeishuApiClient({
       id: config.id,
-      type: 'messenger',
-      enabled: true,
-      capabilities: ['messaging', 'media', 'notification'],
-      name: config.name ?? 'Feishu',
       appId: config.appId,
       appSecret: config.appSecret,
       connectionMode: config.connectionMode,
@@ -82,7 +71,6 @@ export class FeishuChannel implements ChannelPlugin {
       webhookPath: config.webhookPath,
       encryptKey: config.encryptKey,
       verificationToken: config.verificationToken,
-      thinkingThresholdMs: config.thinkingThresholdMs,
       botNames: config.botNames,
     }, logger);
   }
@@ -93,23 +81,17 @@ export class FeishuChannel implements ChannelPlugin {
 
   readonly outbound: OutboundAdapter = {
     sendText: async (chatId, text, options) => {
-      const result = await this.provider.sendText(chatId, text, options?.replyTo);
+      const result = await this.client.sendText(chatId, text, options?.replyTo);
       return { ok: result.ok, messageId: result.messageId };
     },
 
     sendCard: async (chatId, card) => {
-      if (!this.provider.sendCard) {
-        return { ok: false };
-      }
-      const result = await this.provider.sendCard(chatId, card);
+      const result = await this.client.sendCard(chatId, card);
       return { ok: result.ok, messageId: result.messageId };
     },
 
     sendMedia: async (chatId, media, text) => {
-      if (!this.provider.sendMedia) {
-        return { ok: false };
-      }
-      const result = await this.provider.sendMedia(chatId, media.url, text);
+      const result = await this.client.sendMedia(chatId, media.url, text);
       return { ok: result.ok, messageId: result.messageId };
     },
   };
@@ -120,24 +102,19 @@ export class FeishuChannel implements ChannelPlugin {
 
   readonly lifecycle: LifecycleAdapter = {
     start: async () => {
-      await this.provider.initialize(this.logger);
-
-      // ⚠️ 必须在 provider.start() 之前注册处理器
-      // 因为 provider.start() 内部会检查 this.interactionHandler
-
       // 注册消息处理器
-      this.provider.onMessage(async (event) => {
+      this.client.onMessage(async (event) => {
         if (this.messageHandler) {
           const message: StandardMessage = {
             source: {
               channelId: this.id,
-              chatId: event.source.chatId,
-              userId: event.source.senderId || '',
-              messageId: event.source.messageId,
-              chatType: event.source.chatType === 'direct' ? 'p2p' : 'group',
+              chatId: event.chatId,
+              userId: event.senderId || '',
+              messageId: event.messageId,
+              chatType: event.chatType === 'p2p' ? 'p2p' : 'group',
             },
             content: {
-              text: event.content.text,
+              text: event.text,
             },
             raw: event,
           };
@@ -146,37 +123,34 @@ export class FeishuChannel implements ChannelPlugin {
       });
 
       // 注册交互处理器
-      if (this.provider.onInteraction) {
-        this.provider.onInteraction(async (event) => {
-          if (this.interactionHandler) {
-            // 从 value 中提取 chatId
-            const value = event.value as Record<string, unknown>;
-            const contextData = value?.context as Record<string, unknown> | undefined;
-            const chatId = (contextData?.chatId as string) || '';
-            
-            return this.interactionHandler({
-              channelId: this.id,
-              userId: event.userId,
-              chatId,
-              messageId: event.messageId,
-              action: event.action,
-              value: event.value,
-            });
-          }
-          return {};
-        });
-      }
+      this.client.onInteraction(async (event) => {
+        if (this.interactionHandler) {
+          const value = event.action?.value as Record<string, unknown> || {};
+          const contextData = value?.context as Record<string, unknown> | undefined;
+          const chatId = (contextData?.chatId as string) || '';
+          
+          return this.interactionHandler({
+            channelId: this.id,
+            userId: event.userId || '',
+            chatId,
+            messageId: event.open_message_id || '',
+            action: (value?.action as string) || 'custom',
+            value,
+          });
+        }
+        return {};
+      });
 
-      // 启动 provider（会在内部使用上面注册的 handler）
-      await this.provider.start();
+      // 连接
+      await this.client.connect();
     },
 
     stop: async () => {
-      await this.provider.destroy();
+      this.client.disconnect();
     },
 
     healthCheck: async () => {
-      return this.provider.healthCheck();
+      return this.client.healthCheck();
     },
   };
 
@@ -193,21 +167,14 @@ export class FeishuChannel implements ChannelPlugin {
   }
 
   // ============================================================
-  // Provider Access
+  // Client Access
   // ============================================================
 
   /**
-   * 获取底层 FeishuProvider
+   * 获取底层 Client
    */
-  getProvider(): FeishuProvider {
-    return this.provider;
-  }
-
-  /**
-   * 获取飞书客户端
-   */
-  getClient() {
-    return this.provider.getClient();
+  getClient(): FeishuClient {
+    return this.client;
   }
 }
 

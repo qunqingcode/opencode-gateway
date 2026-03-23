@@ -8,14 +8,14 @@ import { BaseMCPServer } from '../base';
 import { createTool, ToolDefinition } from '../types';
 import type { ToolContext } from '../../gateway/types';
 import type { Logger } from '../../channels/types';
-import { ZentaoProvider } from '../../providers/zentao';
+import { ZentaoClient, ZentaoClientConfig } from '../../api/zentao';
 import {
   FeishuCardBuilder,
   ActionBuilder,
   createFeishuCardInteractionEnvelope,
   buildFeishuCardInteractionContext,
   FEISHU_CARD_DEFAULT_TTL_MS,
-} from '../../providers/feishu/card';
+} from '../../api/feishu/card';
 
 // ============================================================
 // 配置
@@ -37,16 +37,12 @@ export class ZentaoMCPServer extends BaseMCPServer {
   readonly name = 'zentao';
   readonly description = '禅道项目管理工具';
 
-  private provider: ZentaoProvider;
+  private client: ZentaoClient;
 
   constructor(config: ZentaoMCPServerConfig, logger: Logger) {
     super(config as unknown as Record<string, unknown>, logger);
 
-    this.provider = new ZentaoProvider({
-      id: 'zentao-mcp',
-      type: 'issue',
-      enabled: true,
-      capabilities: ['issues', 'project'],
+    this.client = new ZentaoClient({
       baseUrl: config.baseUrl,
       token: config.token,
       account: config.account,
@@ -75,7 +71,7 @@ export class ZentaoMCPServer extends BaseMCPServer {
           required: ['bugId'],
         },
         execute: async (args) => {
-          const issue = await this.provider.getIssue(args.bugId as number);
+          const issue = await this.client.getIssue(args.bugId as number);
           if (!issue) {
             return { success: false, error: `Bug #${args.bugId} 不存在` };
           }
@@ -95,7 +91,7 @@ export class ZentaoMCPServer extends BaseMCPServer {
           },
         },
         execute: async (args) => {
-          const result = await this.provider.getIssues({
+          const result = await this.client.getIssues({
             status: args.status as string,
             assignee: args.assignee as string,
           });
@@ -180,7 +176,7 @@ export class ZentaoMCPServer extends BaseMCPServer {
         },
         execute: async (args) => {
           try {
-            const issue = await this.provider.createIssue({
+            const issue = await this.client.createIssue({
               title: args.title as string,
               description: args.description as string,
               priority: args.priority as 'critical' | 'high' | 'medium' | 'low',
@@ -288,7 +284,7 @@ export class ZentaoMCPServer extends BaseMCPServer {
         },
         execute: async (args) => {
           try {
-            await this.provider.closeIssue(args.bugId as number);
+            await this.client.closeIssue(args.bugId as number);
 
             // 返回成功状态卡片
             const successCard = new FeishuCardBuilder()
@@ -332,7 +328,7 @@ export class ZentaoMCPServer extends BaseMCPServer {
           required: ['bugId', 'comment'],
         },
         execute: async (args) => {
-          await this.provider.addComment(args.bugId as number, args.comment as string);
+          await this.client.addComment(args.bugId as number, args.comment as string);
           return { success: true, output: `已为 Bug #${args.bugId} 添加评论` };
         },
       }),
@@ -372,7 +368,7 @@ export class ZentaoMCPServer extends BaseMCPServer {
   // ============================================================
 
   async start(): Promise<void> {
-    await this.provider.start();
+    await this.client.init();
     await super.start();
   }
 

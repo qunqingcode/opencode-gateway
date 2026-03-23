@@ -1,43 +1,25 @@
 /**
- * 禅道 Provider 实现
+ * 禅道 API Client
  * 
- * 使用通用 HTTP 客户端
- * 支持禅道开源版 18+ / 企业版 RESTful API
- * 文档：https://www.zentao.net/book/api/1397.html
+ * 封装禅道 REST API 调用
+ * 支持禅道开源版 18+ / 企业版
  */
 
-import {
-  BaseProvider,
-  IIssueProvider,
-  ProviderConfig,
-  ProviderCapability,
-  Issue,
-  IssueQuery,
-  IssueCreateParams,
-  Logger,
-} from '../../core';
+import { BaseClient } from '../base';
+import type { Issue, IssueQuery, IssueCreateParams, Logger } from '../../types';
 import { createHttpClient, HttpClient } from '../../utils/http-client';
 
 // ============================================================
-// 禅道配置
+// 配置和类型
 // ============================================================
 
-export interface ZentaoConfig extends ProviderConfig {
-  /** 禅道 API 地址，如 http://zentao/api.php/v1 */
+export interface ZentaoClientConfig {
   baseUrl: string;
-  /** API Token（可选，如果有直接使用） */
   token?: string;
-  /** 账号（用于登录获取 Token） */
   account?: string;
-  /** 密码（用于登录获取 Token） */
   password?: string;
-  /** 项目 ID */
   projectId?: string | number;
 }
-
-// ============================================================
-// 禅道 API 响应类型
-// ============================================================
 
 interface ZentaoLoginResponse {
   token: string;
@@ -56,72 +38,51 @@ interface ZentaoIssue {
 }
 
 // ============================================================
-// 禅道 Provider
+// Zentao Client
 // ============================================================
 
-export class ZentaoProvider extends BaseProvider implements IIssueProvider {
-  readonly id: string;
-  readonly type = 'issue' as const;
-  readonly name: string;
-  readonly capabilities: ProviderCapability[] = ['issues', 'project'];
-
-  readonly config: ZentaoConfig;
+export class ZentaoClient extends BaseClient {
+  readonly name = 'Zentao';
+  
   private client: HttpClient;
   private token: string | null = null;
+  private projectId?: string | number;
+  private account?: string;
+  private password?: string;
 
-  constructor(config: ZentaoConfig, logger: Logger) {
-    super();
-    this.config = config;
-    this.id = config.id;
-    this.name = config.name || 'Zentao';
-    this.logger = logger;
-
-    // 初始化 HTTP 客户端（先不设置 token，登录后再设置）
+  constructor(config: ZentaoClientConfig, logger: Logger) {
+    super(config.baseUrl, logger);
+    this.projectId = config.projectId;
+    this.account = config.account;
+    this.password = config.password;
+    
     this.client = createHttpClient({
       baseUrl: config.baseUrl,
       timeout: 30000,
       allowSelfSignedCert: true,
     });
 
-    // 如果配置了 token，直接使用
     if (config.token) {
       this.token = config.token;
       this.client.setToken(config.token);
     }
   }
 
-  async start(): Promise<{ stop: () => void }> {
-    // 如果没有 token，用账号密码登录获取
-    if (!this.token && this.config.account && this.config.password) {
+  /**
+   * 初始化（登录获取 Token）
+   */
+  async init(): Promise<void> {
+    if (!this.token && this.account && this.password) {
       await this.login();
     }
-
-    this.setStatusRunning('api');
-    this.logger?.info(`[${this.id}] Zentao provider started`);
-    return {
-      stop: () => {
-        this.setStatusStopped();
-      },
-    };
   }
 
-  async healthCheck(): Promise<{ healthy: boolean; message: string; details?: Record<string, unknown> }> {
+  async healthCheck(): Promise<{ healthy: boolean; message: string }> {
     try {
-      // 尝试获取用户信息验证连接
-      const result = await this.client.get<{ id?: number; account?: string }>('/users/me');
-      return {
-        healthy: true,
-        message: 'Connection successful',
-        details: {
-          user: result?.account ?? 'unknown',
-          token: this.token ? 'valid' : 'missing',
-        },
-      };
+      await this.client.get('/users/me');
+      return { healthy: true, message: 'Connected' };
     } catch (error) {
-      return {
-        healthy: false,
-        message: (error as Error).message,
-      };
+      return { healthy: false, message: (error as Error).message };
     }
   }
 
@@ -142,7 +103,7 @@ export class ZentaoProvider extends BaseProvider implements IIssueProvider {
       Object.keys(params).length > 0 ? params : undefined
     );
 
-    const issues = (result?.bugs || result as unknown as ZentaoIssue[] || []).map(this.mapIssue);
+    const issues = (result?.bugs || []).map(this.mapIssue);
 
     return {
       issues,
@@ -166,12 +127,10 @@ export class ZentaoProvider extends BaseProvider implements IIssueProvider {
       pri: this.mapPriority(params.priority),
       type: params.type || 'bug',
       assignedTo: params.assignee,
-      project: this.config.projectId,
+      project: this.projectId,
     });
 
-    this.recordActivity();
-    this.logger?.info(`[${this.id}] Created issue: ${result.id}`);
-
+    this.logger.info(`[Zentao] Created issue: ${result.id}`);
     return this.mapIssue(result);
   }
 
@@ -183,39 +142,31 @@ export class ZentaoProvider extends BaseProvider implements IIssueProvider {
       assignedTo: params.assignee,
     });
 
-    this.recordActivity();
     return this.mapIssue(result);
   }
 
   async closeIssue(issueId: string | number): Promise<void> {
     await this.client.put(`/bugs/${issueId}/close`);
-    this.recordActivity();
   }
 
   async addComment(issueId: string | number, content: string): Promise<void> {
     await this.client.post(`/bugs/${issueId}/comments`, { content });
-    this.recordActivity();
   }
 
   // ============================================================
   // 内部方法
   // ============================================================
 
-  /**
-   * 登录获取 Token
-   * API: POST /tokens
-   */
   private async login(): Promise<void> {
-    if (!this.config.account || !this.config.password) return;
+    if (!this.account || !this.password) return;
 
     try {
-      // 禅道登录需要特殊处理，不使用 Token
-      const response = await fetch(`${this.config.baseUrl.replace(/\/+$/, '')}/tokens`, {
+      const response = await fetch(`${this.baseUrl.replace(/\/+$/, '')}/tokens`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          account: this.config.account,
-          password: this.config.password,
+          account: this.account,
+          password: this.password,
         }),
       });
 
@@ -226,9 +177,9 @@ export class ZentaoProvider extends BaseProvider implements IIssueProvider {
       const result = await response.json() as ZentaoLoginResponse;
       this.token = result.token;
       this.client.setToken(result.token);
-      this.logger?.info(`[${this.id}] Login successful, token obtained`);
+      this.logger.info(`[Zentao] Login successful`);
     } catch (error) {
-      this.logger?.error(`[${this.id}] Login failed: ${(error as Error).message}`);
+      this.logger.error(`[Zentao] Login failed: ${(error as Error).message}`);
       throw error;
     }
   }
@@ -284,6 +235,6 @@ export class ZentaoProvider extends BaseProvider implements IIssueProvider {
 // 工厂函数
 // ============================================================
 
-export function createZentaoProvider(config: ZentaoConfig, logger: Logger): ZentaoProvider {
-  return new ZentaoProvider(config, logger);
+export function createZentaoClient(config: ZentaoClientConfig, logger: Logger): ZentaoClient {
+  return new ZentaoClient(config, logger);
 }
