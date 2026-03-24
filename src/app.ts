@@ -109,13 +109,12 @@ export class App {
 
       // 处理 Stdio 类型
       const serverConfig = config.type === 'stdio' && config.command
-        ? { ...config, command: config.command() }
+        ? { ...config, name, command: config.command() }
         : config;
 
-      // 从 config 中移除 type 和 command 函数
+      // 从 config 中移除 type (command 已在上方解析为数组，不需要删除)
       const cleanConfig = { ...serverConfig };
       delete (cleanConfig as any).type;
-      delete (cleanConfig as any).command;
 
       const server = createMCPServer(
         config.type === 'stdio' ? 'stdio' : name,

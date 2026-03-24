@@ -93,10 +93,12 @@ export class StdioMCPServer implements IMCPServer {
     this.logger.info(`[StdioMCP:${this.name}] Starting with command: ${this.config.command.join(' ')}`);
 
     // 启动子进程
+    // Windows 需要 shell: true 来正确执行 npx.cmd 等命令
     this.process = spawn(this.config.command[0], this.config.command.slice(1), {
       env: { ...process.env, ...this.config.env },
       cwd: this.config.cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
+      shell: process.platform === 'win32',
     });
 
     // 处理 stdout (JSON-RPC 响应)
