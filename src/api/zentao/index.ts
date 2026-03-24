@@ -161,20 +161,12 @@ export class ZentaoClient extends BaseClient {
     if (!this.account || !this.password) return;
 
     try {
-      const response = await fetch(`${this.baseUrl.replace(/\/+$/, '')}/tokens`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          account: this.account,
-          password: this.password,
-        }),
+      // 使用 HttpClient 而不是原生 fetch，支持自签名证书
+      const result = await this.client.post<ZentaoLoginResponse>('/tokens', {
+        account: this.account,
+        password: this.password,
       });
 
-      if (!response.ok) {
-        throw new Error(`Login failed: HTTP ${response.status}`);
-      }
-
-      const result = await response.json() as ZentaoLoginResponse;
       this.token = result.token;
       this.client.setToken(result.token);
       this.logger.info(`[Zentao] Login successful`);
