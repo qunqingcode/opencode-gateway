@@ -10,6 +10,7 @@
  */
 
 import * as Lark from '@larksuiteoapi/node-sdk';
+import { BaseClient } from '../base';
 import type { Logger } from '../../types';
 import { sendTextMessage, sendMediaMessage, sendCardMessage, createFeishuClient, uploadAndSendFile } from './send';
 import { startFeishuProvider, FeishuProviderOptions } from './receive';
@@ -86,21 +87,25 @@ export interface FeishuConfig {
  * 飞书 API 客户端
  * 
  * 封装消息发送、卡片推送等 API 调用
+ * 继承 BaseClient 保持与 GitLabClient、ZentaoClient 的一致性
  */
-export class FeishuClient {
+export class FeishuClient extends BaseClient {
+  readonly name = 'Feishu';
+  
   readonly id: string;
   
   private client: InstanceType<typeof Lark.Client>;
-  private logger: Logger;
   private config: FeishuConfig;
   private messageHandler: ((event: any) => Promise<void>) | null = null;
   private interactionHandler: ((event: any) => Promise<unknown>) | null = null;
   private stopFn: (() => void) | null = null;
 
   constructor(config: FeishuConfig, logger: Logger) {
+    const domain = config.domain === 'lark' ? 'https://open.larksuite.com' : 'https://open.feishu.cn';
+    super(domain, logger);
+    
     this.id = config.id;
     this.config = config;
-    this.logger = logger;
 
     this.client = createFeishuClient({
       appId: config.appId,
