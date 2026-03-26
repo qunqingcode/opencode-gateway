@@ -115,12 +115,16 @@ export class GitLabMCPServer extends BaseMCPServer {
             targetBranch: { type: 'string', description: '目标分支' },
             title: { type: 'string', description: 'MR 标题' },
             description: { type: 'string', description: 'MR 描述' },
+            changelogUrl: { type: 'string', description: '变更日志云文档链接' },
           },
           required: ['sourceBranch', 'targetBranch', 'title'],
         },
         requiresApproval: true,
         execute: async (args, context: ToolContext) => {
-          const content = `**源分支**: \`${args.sourceBranch}\`\n**目标分支**: \`${args.targetBranch}\`\n**标题**: ${args.title}`;
+          let content = `**源分支**: \`${args.sourceBranch}\`\n**目标分支**: \`${args.targetBranch}\`\n**标题**: ${args.title}`;
+          if (args.changelogUrl) {
+            content += `\n\n📄 **变更日志**: [查看](${args.changelogUrl})`;
+          }
 
           const cardContext = buildFeishuCardInteractionContext({
             operatorOpenId: context.userId,
@@ -173,22 +177,35 @@ export class GitLabMCPServer extends BaseMCPServer {
             targetBranch: { type: 'string', description: '目标分支' },
             title: { type: 'string', description: 'MR 标题' },
             description: { type: 'string', description: 'MR 描述' },
+            changelogUrl: { type: 'string', description: '变更日志链接' },
           },
           required: ['sourceBranch', 'targetBranch', 'title'],
         },
         execute: async (args) => {
           try {
+            // 构建 MR 描述，包含变更日志链接
+            let mrDescription = (args.description as string) || '';
+            if (args.changelogUrl) {
+              mrDescription = `## 变更日志\n\n${args.changelogUrl}\n\n---\n\n${mrDescription}`;
+            }
+
             const mr = await this.client.createMergeRequest(
               args.sourceBranch as string,
               args.targetBranch as string,
-              args.title as string
+              args.title as string,
+              mrDescription
             );
 
             // 返回成功状态卡片
+            let successContent = `**标题**: ${args.title}\n**源分支**: \`${args.sourceBranch}\`\n**目标分支**: \`${args.targetBranch}\`\n**链接**: [查看 MR](${mr.url})`;
+            if (args.changelogUrl) {
+              successContent += `\n\n📄 **变更日志**: [查看](${args.changelogUrl})`;
+            }
+
             const successCard = new FeishuCardBuilder()
               .setConfig({ wide_screen_mode: true, update_multi: true })
               .setHeader('✅ MR 创建成功', 'green')
-              .addMarkdown(`**标题**: ${args.title}\n**源分支**: \`${args.sourceBranch}\`\n**目标分支**: \`${args.targetBranch}\`\n**链接**: [查看 MR](${mr.url})`)
+              .addMarkdown(successContent)
               .build();
 
             return {

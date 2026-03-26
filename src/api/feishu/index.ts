@@ -12,7 +12,7 @@
 import * as Lark from '@larksuiteoapi/node-sdk';
 import { BaseClient } from '../base';
 import type { Logger } from '../../types';
-import { sendTextMessage, sendMediaMessage, sendCardMessage, createFeishuClient, uploadAndSendFile } from './send';
+import { sendTextMessage, sendMediaMessage, sendCardMessage, createFeishuClient, uploadAndSendFile, sendRichTextMessage, uploadImage } from './send';
 import { startFeishuProvider, FeishuProviderOptions } from './receive';
 
 // ============================================================
@@ -50,6 +50,8 @@ export {
   sendMediaMessage,
   sendCardMessage,
   uploadAndSendFile,
+  sendRichTextMessage,
+  uploadImage,
   type FeishuSendResult,
 } from './send';
 
@@ -128,6 +130,29 @@ export class FeishuClient extends BaseClient {
 
   async sendCard(chatId: string, card: unknown, replyToId?: string) {
     return sendCardMessage(this.client, chatId, card as object, replyToId);
+  }
+
+  /**
+   * 上传并发送文件/图片
+   */
+  async uploadAndSendFile(filePath: string, chatId: string, replyToId?: string) {
+    return uploadAndSendFile(
+      this.client,
+      filePath,
+      chatId,
+      replyToId || '',
+      {
+        info: (msg) => this.logger.info(`[Feishu] ${msg}`),
+        error: (msg) => this.logger.error(`[Feishu] ${msg}`),
+      }
+    );
+  }
+
+  /**
+   * 获取底层 Lark Client
+   */
+  getNativeClient(): InstanceType<typeof Lark.Client> {
+    return this.client;
   }
 
   // ============================================================

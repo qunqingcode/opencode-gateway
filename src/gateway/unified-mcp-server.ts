@@ -346,12 +346,36 @@ export class UnifiedMCPHTTPServer {
           this.logger.warn('[MCP Tool] sendText: no channel or chatId');
         }
       },
+      sendRichText: async (text: string, images: string[]) => {
+        if (this.channel && chatId && this.channel.outbound.sendRichText) {
+          await this.channel.outbound.sendRichText(chatId, text, images);
+          this.logger.info(`[MCP Tool] sendRichText sent to ${chatId}`);
+        } else {
+          this.logger.warn('[MCP Tool] sendRichText: no channel, chatId, or capability');
+        }
+      },
+      sendFile: async (filePath: string) => {
+        if (this.channel && chatId && this.channel.outbound.sendFile) {
+          await this.channel.outbound.sendFile(chatId, filePath);
+          this.logger.info(`[MCP Tool] sendFile sent to ${chatId}: ${filePath}`);
+        } else {
+          this.logger.warn('[MCP Tool] sendFile: no channel, chatId, or capability');
+        }
+      },
       sendCard: async (card: unknown) => {
         if (this.channel && chatId && this.channel.outbound.sendCard) {
           await this.channel.outbound.sendCard(chatId, card);
           this.logger.info(`[MCP Tool] sendCard sent to ${chatId}`);
         } else {
           this.logger.warn('[MCP Tool] sendCard: no channel or chatId');
+        }
+      },
+      sendMedia: async (url: string, text?: string) => {
+        if (this.channel && chatId && this.channel.outbound.sendMedia) {
+          await this.channel.outbound.sendMedia(chatId, { type: 'file', url }, text);
+          this.logger.info(`[MCP Tool] sendMedia sent to ${chatId}`);
+        } else {
+          this.logger.warn('[MCP Tool] sendMedia: no channel, chatId, or capability');
         }
       },
       logger: this.logger,

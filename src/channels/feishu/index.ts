@@ -22,6 +22,7 @@ import {
   createFeishuApiClient,
   type FeishuConfig,
 } from '../../api/feishu';
+import { sendRichTextMessage, uploadImage } from '../../api/feishu/send';
 
 // ============================================================
 // 飞书配置
@@ -77,11 +78,14 @@ export class FeishuChannel implements ChannelPlugin {
 
     // 初始化 outbound adapter
     this._outbound = {
+      // ============================================================
+      // 纯文本消息
+      // ============================================================
       sendText: async (chatId: string, text: string, options?: { replyTo?: string }) => {
-        this.logger.info(`[FeishuChannel] sendText to ${chatId}: ${text?.slice(0, 100)}...`);
+        this.logger.info(`[FeishuChannel] sendText to ${chatId}`);
         try {
           const result = await this.client.sendText(chatId, text, options?.replyTo);
-          this.logger.info(`[FeishuChannel] sendText result: ok=${result.ok}, error=${result.error || 'none'}`);
+          this.logger.info(`[FeishuChannel] sendText result: ok=${result.ok}`);
           return { ok: result.ok, messageId: result.messageId };
         } catch (err) {
           this.logger.error(`[FeishuChannel] sendText error: ${(err as Error).message}`);
@@ -89,11 +93,74 @@ export class FeishuChannel implements ChannelPlugin {
         }
       },
 
+      // ============================================================
+      // 富文本消息（文本 + 图片在一条消息里）
+      // ============================================================
+      sendRichText: async (chatId: string, text: string, images: string[], options?: { replyTo?: string }) => {
+        this.logger.info(`[FeishuChannel] sendRichText to ${chatId}, images=${images.length}`);
+        try {
+          // 上传图片获取 image_key
+          const imageKeys: string[] = [];
+          for (const imagePath of images) {
+            this.logger.info(`[FeishuChannel] Uploading image: ${imagePath}`);
+            const uploadResult = await uploadImage(this.client.getNativeClient(), imagePath);
+            if (uploadResult.ok && uploadResult.imageKey) {
+              imageKeys.push(uploadResult.imageKey);
+              this.logger.info(`[FeishuChannel] Image uploaded: ${uploadResult.imageKey}`);
+            } else {
+              this.logger.error(`[FeishuChannel] Image upload failed: ${uploadResult.error}`);
+            }
+          }
+
+          if (imageKeys.length === 0) {
+            // 没有图片，降级为纯文本
+            this.logger.info(`[FeishuChannel] No images, fallback to sendText`);
+            return await this._outbound!.sendText(chatId, text, options);
+          }
+
+          // 发送富文本消息
+          const result = await sendRichTextMessage(
+            this.client.getNativeClient(),
+            chatId,
+            text,
+            imageKeys,
+            options?.replyTo
+          );
+          this.logger.info(`[FeishuChannel] sendRichText result: ok=${result.ok}`);
+          return { ok: result.ok, messageId: result.messageId };
+        } catch (err) {
+          this.logger.error(`[FeishuChannel] sendRichText error: ${(err as Error).message}`);
+          return { ok: false };
+        }
+      },
+
+      // ============================================================
+      // 发送文件/图片（单独一条消息）
+      // ============================================================
+      sendFile: async (chatId: string, filePath: string, options?: { replyTo?: string }) => {
+        this.logger.info(`[FeishuChannel] sendFile to ${chatId}: ${filePath}`);
+        try {
+          const result = await this.client.uploadAndSendFile(
+            filePath,
+            chatId,
+            options?.replyTo
+          );
+          this.logger.info(`[FeishuChannel] sendFile result: ok=${result.ok}`);
+          return { ok: result.ok, messageId: result.messageId };
+        } catch (err) {
+          this.logger.error(`[FeishuChannel] sendFile error: ${(err as Error).message}`);
+          return { ok: false };
+        }
+      },
+
+      // ============================================================
+      // 卡片消息
+      // ============================================================
       sendCard: async (chatId: string, card: unknown) => {
         this.logger.info(`[FeishuChannel] sendCard to ${chatId}`);
         try {
           const result = await this.client.sendCard(chatId, card);
-          this.logger.info(`[FeishuChannel] sendCard result: ok=${result.ok}, error=${result.error || 'none'}`);
+          this.logger.info(`[FeishuChannel] sendCard result: ok=${result.ok}`);
           return { ok: result.ok, messageId: result.messageId };
         } catch (err) {
           this.logger.error(`[FeishuChannel] sendCard error: ${(err as Error).message}`);
@@ -101,7 +168,11 @@ export class FeishuChannel implements ChannelPlugin {
         }
       },
 
+      // ============================================================
+      // 媒体消息
+      // ============================================================
       sendMedia: async (chatId: string, media: { url: string }, text?: string) => {
+        this.logger.info(`[FeishuChannel] sendMedia to ${chatId}`);
         try {
           const result = await this.client.sendMedia(chatId, media.url, text);
           return { ok: result.ok, messageId: result.messageId };

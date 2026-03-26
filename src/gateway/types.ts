@@ -155,8 +155,14 @@ export interface ToolContext {
   
   /** 发送文本消息 */
   sendText(text: string): Promise<void>;
+  /** 发送富文本消息（文本 + 图片） */
+  sendRichText?(text: string, images: string[]): Promise<void>;
+  /** 发送文件 */
+  sendFile?(filePath: string): Promise<void>;
   /** 发送卡片 */
   sendCard(card: unknown): Promise<void>;
+  /** 发送媒体 */
+  sendMedia?(url: string, text?: string): Promise<void>;
   
   /** 日志 */
   logger: Logger;
@@ -213,4 +219,23 @@ export interface ToolCallHookContext {
   request: MCPToolCallRequest;
   context: ToolContext;
   result?: MCPToolCallResult;
+}
+
+// ============================================================
+// 消息类型检测
+// ============================================================
+
+/** 检测到的消息类型 */
+export type DetectedMessageType = 'text' | 'richText' | 'media';
+
+/** 检测结果 */
+export interface DetectedMessage {
+  /** 消息类型 */
+  type: DetectedMessageType;
+  /** 文本内容 */
+  text: string;
+  /** 图片 URL 列表（richText 类型，仅 HTTP URL） */
+  images?: string[];
+  /** 媒体 URL（media 类型，仅 HTTP URL） */
+  mediaUrl?: string;
 }

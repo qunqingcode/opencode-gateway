@@ -82,8 +82,14 @@ export interface ApprovalCard {
 
 /** 消息发送适配器 */
 export interface OutboundAdapter {
-  /** 发送文本消息 */
+  /** 发送纯文本消息 */
   sendText(chatId: string, text: string, options?: { replyTo?: string }): Promise<{ ok: boolean; messageId?: string }>;
+  
+  /** 发送富文本消息（文本 + 图片在一条消息里） */
+  sendRichText?(chatId: string, text: string, images: string[], options?: { replyTo?: string }): Promise<{ ok: boolean; messageId?: string }>;
+  
+  /** 发送文件/图片（单独一条消息） */
+  sendFile?(chatId: string, filePath: string, options?: { replyTo?: string }): Promise<{ ok: boolean; messageId?: string }>;
   
   /** 发送卡片 */
   sendCard?(chatId: string, card: unknown): Promise<{ ok: boolean; messageId?: string }>;

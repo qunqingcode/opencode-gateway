@@ -82,6 +82,11 @@ const app = createApp({
         return ['npx', '-y', '@larksuiteoapi/lark-mcp', 'mcp', '-a', appId, '-s', appSecret];
       },
     },
+    
+    // 消息发送工具（通用，始终启用）
+    message: {
+      enabled: true,
+    },
   },
 }, logger);
 

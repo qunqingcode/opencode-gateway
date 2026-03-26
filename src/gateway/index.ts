@@ -28,6 +28,8 @@ export type {
   HookHandler,
   MessageHookContext,
   ToolCallHookContext,
+  DetectedMessageType,
+  DetectedMessage,
 } from './types';
 
 // ============================================================
@@ -54,12 +56,14 @@ import type {
   ToolContext,
   MCPToolCallRequest,
   Logger,
+  DetectedMessage,
 } from './types';
-import type { ChannelPlugin } from '../channels/types';
+import type { ChannelPlugin, MediaPayload } from '../channels/types';
 import { SessionManager } from './session';
 import { MCPClient } from './mcp-client';
 import { FeishuCardBuilder, ActionBuilder } from '../api/feishu/card/card-builder';
 import { createFeishuCardInteractionEnvelope } from '../api/feishu/card/card-interaction';
+import { detectMessageType } from './utils/detect-message-type';
 
 /** OpenCode SDK 类型 - 使用 any 避免类型冲突 */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -177,7 +181,8 @@ export class Gateway implements IGateway {
       this.logger.info(`[Gateway] Channel found: ${!!channel}, channelId: ${channelId}`);
       if (channel && response) {
         this.logger.info(`[Gateway] Sending response to ${chatId}`);
-        await channel.outbound.sendText(chatId, response);
+        // 根据响应内容自动检测消息类型并发送
+        await this.sendResponse(channel, chatId, response);
       } else {
         this.logger.warn(`[Gateway] No response to send - channel: ${!!channel}, response: ${!!response}`);
       }
@@ -187,6 +192,61 @@ export class Gateway implements IGateway {
       const channel = this.channels.get(channelId);
       if (channel) {
         await channel.outbound.sendText(chatId, `❌ 处理出错: ${(error as Error).message}`);
+      }
+    }
+  }
+
+  /**
+   * 根据响应内容自动检测消息类型并发送
+   * 
+   * 设计原则：
+   * - 只自动处理 HTTP URL（图片、视频、音频）
+   * - 本地文件路径不自动发送，需要 AI 调用 message.send_file 工具
+   */
+  private async sendResponse(
+    channel: ChannelPlugin,
+    chatId: string,
+    response: string
+  ): Promise<void> {
+    // 检测消息类型
+    const detected = detectMessageType(response);
+    this.logger.info(`[Gateway] Detected message type: ${detected.type}`);
+
+    switch (detected.type) {
+      case 'richText': {
+        // 富文本：文本 + HTTP 图片 URL
+        const images = detected.images || [];
+        if (images.length > 0 && channel.outbound.sendRichText) {
+          this.logger.info(`[Gateway] Sending richText with ${images.length} images`);
+          await channel.outbound.sendRichText(chatId, detected.text, images);
+        } else {
+          // 降级为纯文本
+          await channel.outbound.sendText(chatId, response);
+        }
+        break;
+      }
+
+      case 'media': {
+        // 媒体（HTTP 视频/音频 URL）
+        if (detected.mediaUrl && channel.outbound.sendMedia) {
+          this.logger.info(`[Gateway] Sending media: ${detected.mediaUrl}`);
+          await channel.outbound.sendMedia(
+            chatId,
+            { url: detected.mediaUrl } as MediaPayload,
+            detected.text || undefined
+          );
+        } else {
+          // 降级为纯文本
+          await channel.outbound.sendText(chatId, response);
+        }
+        break;
+      }
+
+      case 'text':
+      default: {
+        // 纯文本
+        await channel.outbound.sendText(chatId, detected.text);
+        break;
       }
     }
   }
@@ -595,10 +655,28 @@ export class Gateway implements IGateway {
           await channel.outbound.sendText(event.chatId, text);
         }
       },
+      sendRichText: async (text: string, images: string[]) => {
+        const channel = Array.from(this.channels.values())[0];
+        if (channel?.outbound.sendRichText) {
+          await channel.outbound.sendRichText(event.chatId, text, images);
+        }
+      },
+      sendFile: async (filePath: string) => {
+        const channel = Array.from(this.channels.values())[0];
+        if (channel?.outbound.sendFile) {
+          await channel.outbound.sendFile(event.chatId, filePath);
+        }
+      },
       sendCard: async (card: unknown) => {
         const channel = Array.from(this.channels.values())[0];
         if (channel?.outbound.sendCard) {
           await channel.outbound.sendCard(event.chatId, card);
+        }
+      },
+      sendMedia: async (url: string, text?: string) => {
+        const channel = Array.from(this.channels.values())[0];
+        if (channel?.outbound.sendMedia) {
+          await channel.outbound.sendMedia(event.chatId, { url } as MediaPayload, text);
         }
       },
       logger: this.logger,

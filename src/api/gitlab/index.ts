@@ -130,13 +130,14 @@ export class GitLabClient extends BaseClient {
     return result.map(mr => this.mapMR(mr));
   }
 
-  async createMergeRequest(sourceBranch: string, targetBranch: string, title: string): Promise<MergeRequest> {
+  async createMergeRequest(sourceBranch: string, targetBranch: string, title: string, description?: string): Promise<MergeRequest> {
     const result = await this.client.post<GitLabMergeRequestResponse>(
       `/projects/${this.projectId}/merge_requests`,
       {
         source_branch: sourceBranch,
         target_branch: targetBranch,
         title,
+        description,
         remove_source_branch: true,
       }
     );

@@ -96,6 +96,116 @@ export async function sendTextMessage(
 }
 
 // ============================================================
+// 富文本消息（文本 + 图片）
+// ============================================================
+
+/**
+ * 发送富文本消息（文本和图片在一条消息里）
+ */
+export async function sendRichTextMessage(
+  client: InstanceType<typeof Lark.Client>,
+  chatId: string,
+  text: string,
+  imageKeys: string[],
+  replyToId?: string
+): Promise<FeishuSendResult> {
+  if (!chatId?.trim()) {
+    return { ok: false, error: 'No chat_id provided' };
+  }
+
+  try {
+    // 构建富文本内容
+    const content: Array<Array<{ tag: string; text?: string; image_key?: string }>> = [];
+    
+    // 按行分割文本
+    const lines = text.split('\n');
+    
+    for (const line of lines) {
+      if (line.trim()) {
+        content.push([{ tag: 'text', text: line }]);
+      }
+    }
+    
+    // 添加图片（每个图片独立一个段落）
+    for (const imageKey of imageKeys) {
+      content.push([{ tag: 'img', image_key: imageKey }]);
+    }
+
+    const postContent = {
+      zh_cn: {
+        title: '',
+        content,
+      },
+    };
+
+    if (replyToId) {
+      const res = await client.im.message.reply({
+        path: { message_id: replyToId },
+        data: {
+          content: JSON.stringify(postContent),
+          msg_type: 'post',
+        },
+      });
+      if (res.code !== 0) {
+        return { ok: false, error: `Feishu API Error [${res.code}]: ${res.msg}` };
+      }
+      return { ok: true, messageId: res?.data?.message_id ?? '' };
+    }
+
+    const res = await client.im.message.create({
+      params: { receive_id_type: resolveReceiveIdType(chatId.trim()) },
+      data: {
+        receive_id: chatId.trim(),
+        msg_type: 'post',
+        content: JSON.stringify(postContent),
+      },
+    });
+    if (res.code !== 0) {
+      return { ok: false, error: `Feishu API Error [${res.code}]: ${res.msg}` };
+    }
+    return { ok: true, messageId: res?.data?.message_id ?? '' };
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+/**
+ * 上传图片并返回 image_key
+ */
+export async function uploadImage(
+  client: InstanceType<typeof Lark.Client>,
+  filePath: string
+): Promise<{ ok: boolean; imageKey?: string; error?: string }> {
+  const fs = await import('fs');
+  
+  try {
+    if (!fs.existsSync(filePath)) {
+      return { ok: false, error: 'File not found' };
+    }
+
+    const file = fs.readFileSync(filePath);
+    
+    const response = await client.im.image.create({
+      data: { image_type: 'message', image: file }
+    });
+    
+    const imageKey = (response as any).image_key 
+      || (response as any).data?.image_key;
+    
+    if (!imageKey) {
+      return { ok: false, error: 'No image_key returned' };
+    }
+    
+    return { ok: true, imageKey };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+// ============================================================
 // 媒体消息
 // ============================================================
 
@@ -279,11 +389,26 @@ export async function uploadAndSendFile(
       msgType = 'file';
     }
 
-    // 使用 reply 而不是 create
-    await client.im.message.reply({
-      path: { message_id: messageId },
-      data: { content, msg_type: msgType }
-    });
+    // 根据 replyToId 决定使用 reply 还是 create
+    if (messageId) {
+      // 回复消息模式
+      await client.im.message.reply({
+        path: { message_id: messageId },
+        data: { content, msg_type: msgType }
+      });
+    } else if (chatId) {
+      // 主动发送消息模式
+      await client.im.message.create({
+        params: { receive_id_type: resolveReceiveIdType(chatId.trim()) },
+        data: {
+          receive_id: chatId.trim(),
+          msg_type: msgType,
+          content,
+        },
+      });
+    } else {
+      return { ok: false, error: 'No messageId or chatId provided' };
+    }
 
     logger?.info(`[${isImage ? '图片' : '文件'}发送成功] ${filePath}`);
     return { ok: true };

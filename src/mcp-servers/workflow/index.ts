@@ -307,6 +307,7 @@ export class WorkflowMCPServer extends BaseMCPServer {
             branchName: { type: 'string', description: '分支名称（可选，默认 fix/bug-{bugId}）' },
             targetBranch: { type: 'string', description: '目标分支（默认 main）' },
             title: { type: 'string', description: 'MR 标题（可选，默认从 Bug 标题生成）' },
+            changelogUrl: { type: 'string', description: '变更日志云文档链接' },
           },
           required: ['bugId'],
         },
@@ -333,7 +334,8 @@ export class WorkflowMCPServer extends BaseMCPServer {
             + `### 将创建\n`
             + `**分支**: \`${actualBranchName}\`\n`
             + `**目标**: \`${targetBranch}\`\n`
-            + `**MR 标题**: ${actualTitle}`;
+            + `**MR 标题**: ${actualTitle}\n`
+            + (args.changelogUrl ? `\n📄 **变更日志**: [查看](${args.changelogUrl})` : '');
 
           const cardContext = buildFeishuCardInteractionContext({
             operatorOpenId: context.userId,
@@ -341,7 +343,7 @@ export class WorkflowMCPServer extends BaseMCPServer {
             expiresAt: Date.now() + FEISHU_CARD_DEFAULT_TTL_MS,
           });
 
-          const confirmArgs = { bugId, branchName: actualBranchName, targetBranch, title: actualTitle };
+          const confirmArgs = { bugId, branchName: actualBranchName, targetBranch, title: actualTitle, changelogUrl: args.changelogUrl };
 
           const confirmEnvelope = createFeishuCardInteractionEnvelope({
             kind: 'button',
@@ -389,15 +391,17 @@ export class WorkflowMCPServer extends BaseMCPServer {
             branchName: { type: 'string', description: '分支名称' },
             targetBranch: { type: 'string', description: '目标分支' },
             title: { type: 'string', description: 'MR 标题' },
+            changelogUrl: { type: 'string', description: '变更日志链接' },
           },
           required: ['bugId', 'branchName', 'targetBranch', 'title'],
         },
         execute: async (args) => {
-          const { bugId, branchName, targetBranch, title } = args as {
+          const { bugId, branchName, targetBranch, title, changelogUrl } = args as {
             bugId: number;
             branchName: string;
             targetBranch: string;
             title: string;
+            changelogUrl?: string;
           };
 
           const results: { step: string; status: 'success' | 'error'; message: string }[] = [];
@@ -435,10 +439,14 @@ export class WorkflowMCPServer extends BaseMCPServer {
           try {
             // Step 2: 创建 MR
             this.logger?.info(`[Workflow] Creating MR...`);
+            const mrDescription = changelogUrl 
+              ? `## 变更日志\n\n${changelogUrl}\n\n---\n\n关联 Bug: #${bugId}`
+              : `关联 Bug: #${bugId}`;
             const mr = await this.gitlabClient.createMergeRequest(
               branchName,
               targetBranch,
-              title
+              title,
+              mrDescription
             );
             results.push({
               step: '创建 MR',
