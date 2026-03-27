@@ -87,6 +87,14 @@ const app = createApp({
     message: {
       enabled: true,
     },
+    
+    // 定时任务管理工具
+    cron: {
+      enabled: true,
+      dataDir: './data',
+      defaultLanguage: 'zh',
+      requireApproval: false,
+    },
   },
 }, logger);
 

@@ -44,6 +44,9 @@ export type { StdioMCPServerConfig } from './stdio';
 export { MessageMCPServer, createMessageMCPServer } from './message';
 export type { MessageMCPServerConfig } from './message';
 
+export { CronMCPServer, createCronMCPServer } from './cron';
+export type { CronMCPServerConfig } from './cron';
+
 // ============================================================
 // Server Registry
 // ============================================================
@@ -55,6 +58,7 @@ import { createGitLabMCPServer, GitLabMCPServerConfig } from './gitlab';
 import { createWorkflowMCPServer, WorkflowMCPServerConfig } from './workflow';
 import { createStdioMCPServer, StdioMCPServerConfig } from './stdio';
 import { createMessageMCPServer, MessageMCPServerConfig } from './message';
+import { createCronMCPServer, CronMCPServerConfig } from './cron';
 
 type ServerFactory = (config: Record<string, unknown>, logger: Logger) => IMCPServer;
 
@@ -77,6 +81,10 @@ serverRegistry.set('stdio', (config, logger) =>
 // Message MCP Server（通用消息发送工具）
 serverRegistry.set('message', (config, logger) => 
   createMessageMCPServer(config as unknown as MessageMCPServerConfig, logger)
+);
+// Cron MCP Server（定时任务管理）
+serverRegistry.set('cron', (config, logger) => 
+  createCronMCPServer(config as unknown as CronMCPServerConfig, logger)
 );
 
 /**
