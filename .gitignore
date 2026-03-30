@@ -19,7 +19,7 @@ dist/
 # OS
 .DS_Store
 Thumbs.db
-
+data/
 # Logs
 *.log
 npm-debug.log*
