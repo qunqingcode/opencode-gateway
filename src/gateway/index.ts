@@ -295,6 +295,14 @@ export class Gateway implements IGateway {
   // OpenCode 调用
   // ============================================================
 
+  /**
+   * 执行 Prompt（公开方法，供外部调用）
+   * 用于 Cron 任务等场景
+   */
+  async executePrompt(sessionId: string, prompt: string): Promise<string | null> {
+    return this.callOpenCode(sessionId, prompt);
+  }
+
   private buildRequestBody(prompt: string): Record<string, unknown> {
     const body: Record<string, unknown> = {
       parts: [{ type: 'text' as const, text: prompt }],

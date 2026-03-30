@@ -9,8 +9,9 @@
 
 import { Gateway, createGateway, UnifiedMCPHTTPServer } from './gateway';
 import { createChannel, ChannelPlugin } from './channels';
-import { createMCPServer, IMCPServer } from './mcp-servers';
+import { createMCPServer, IMCPServer, CronMCPServer } from './mcp-servers';
 import type { Logger } from './types';
+import type { CronJob } from './core/cron';
 
 // ============================================================
 // 配置类型
@@ -130,8 +131,55 @@ export class App {
         mcpClient.registerServer(name, server);
         this.mcpServers.set(name, server);
         this.logger.info(`[MCP] Registered: ${name}`);
+
+        // Cron Server 需要设置执行回调
+        if (name === 'cron' && server instanceof CronMCPServer) {
+          server.setExecutorCallback(this.executeCronJob.bind(this));
+          this.logger.info('[MCP] Cron executor callback set');
+        }
       }
     }
+  }
+
+  /**
+   * 执行 Cron 任务
+   * 将 prompt 发送给 OpenCode Agent 并返回结果
+   */
+  private async executeCronJob(job: CronJob): Promise<void> {
+    this.logger.info(`[Cron] Executing job: ${job.id}, prompt: ${job.prompt.slice(0, 50)}...`);
+
+    try {
+      // 1. 获取或创建 session
+      const sessionId = await this.gateway!.getSessionManager().getOrCreate(job.sessionKey);
+
+      // 2. 调用 OpenCode Agent
+      const response = await this.callOpenCode(sessionId, job.prompt);
+
+      // 3. 发送结果给用户（如果不是静音模式）
+      if (!job.mute && response) {
+        const channel = Array.from(this.channels.values())[0];
+        if (channel) {
+          await channel.outbound.sendText(job.sessionKey, `⏰ 定时任务执行结果:\n\n${response}`);
+        }
+      }
+
+      this.logger.info(`[Cron] Job completed: ${job.id}`);
+    } catch (error) {
+      this.logger.error(`[Cron] Job failed: ${job.id}, error: ${(error as Error).message}`);
+
+      // 发送错误通知
+      const channel = Array.from(this.channels.values())[0];
+      if (channel && !job.mute) {
+        await channel.outbound.sendText(job.sessionKey, `❌ 定时任务执行失败: ${(error as Error).message}`);
+      }
+    }
+  }
+
+  /**
+   * 调用 OpenCode Agent
+   */
+  private async callOpenCode(sessionId: string, prompt: string): Promise<string | null> {
+    return this.gateway!.executePrompt(sessionId, prompt);
   }
 
   private async registerChannels(): Promise<void> {
