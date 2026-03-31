@@ -1,5 +1,7 @@
 /**
- * Cron 定时任务工具
+ * Cron 定时任务工具集
+ * 
+ * 每个操作独立成一个工具，符合 MCP 标准风格
  * 
  * 功能：
  * 1. 定时任务定义和持久化
@@ -12,7 +14,7 @@ import * as path from 'path';
 import * as crypto from 'crypto';
 import type { Logger } from '../types';
 import { BaseTool } from './base';
-import type { ToolDefinition, ToolResult, ToolContext } from './types';
+import type { ToolDefinition, ToolResult, ToolContext, ITool } from './types';
 
 // ============================================================
 // 类型定义
@@ -45,85 +47,141 @@ export interface CronToolConfig {
 }
 
 // ============================================================
-// Cron 工具
+// 共享存储
 // ============================================================
 
-export class CronTool extends BaseTool {
-  readonly definition: ToolDefinition = {
-    name: 'cron',
-    description: '定时任务管理工具',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        action: {
-          type: 'string',
-          description: '操作类型: list, create, delete, enable, disable, run',
-        },
-      },
-      required: ['action'],
-    },
-  };
-
-  private config: CronToolConfig;
+class CronStore {
   private jobs = new Map<string, CronJob>();
   private storePath: string;
+  private logger: Logger;
 
-  constructor(config: CronToolConfig, logger: Logger) {
-    super(logger);
-    this.config = config;
-    this.storePath = path.join(config.dataDir, 'cron-jobs.json');
+  constructor(storePath: string, logger: Logger) {
+    this.storePath = storePath;
+    this.logger = logger;
     this.load();
   }
 
-  async start(): Promise<void> {
-    this.logger.info('[CronTool] Started');
+  get(id: string): CronJob | undefined {
+    return this.jobs.get(id);
   }
 
-  async stop(): Promise<void> {
+  getByChatId(chatId: string): CronJob[] {
+    return Array.from(this.jobs.values()).filter((j) => j.chatId === chatId);
+  }
+
+  set(job: CronJob): void {
+    this.jobs.set(job.id, job);
     this.save();
-    this.logger.info('[CronTool] Stopped');
   }
 
-  async execute(args: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
-    const action = args.action as string;
+  delete(id: string): boolean {
+    const result = this.jobs.delete(id);
+    if (result) this.save();
+    return result;
+  }
 
-    switch (action) {
-      case 'list':
-        return this.listJobs(context);
-      case 'create':
-        return this.createJob(args, context);
-      case 'delete':
-        return this.deleteJob(args);
-      case 'enable':
-        return this.enableJob(args);
-      case 'disable':
-        return this.disableJob(args);
-      case 'run':
-        return this.runJob(args, context);
-      default:
-        return this.error(`Unknown action: ${action}`);
+  update(id: string, updates: Partial<CronJob>): boolean {
+    const job = this.jobs.get(id);
+    if (!job) return false;
+    Object.assign(job, updates);
+    this.save();
+    return true;
+  }
+
+  private load(): void {
+    try {
+      if (!fs.existsSync(this.storePath)) return;
+
+      const data = fs.readFileSync(this.storePath, 'utf-8');
+      const jobs = JSON.parse(data) as CronJob[];
+
+      for (const job of jobs) {
+        this.jobs.set(job.id, job);
+      }
+
+      this.logger.info(`[CronStore] Loaded ${this.jobs.size} jobs`);
+    } catch (err) {
+      this.logger.error(`[CronStore] Failed to load: ${(err as Error).message}`);
     }
   }
 
-  // ============================================================
-  // 操作实现
-  // ============================================================
+  private save(): void {
+    try {
+      const dir = path.dirname(this.storePath);
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
 
-  private listJobs(context: ToolContext): ToolResult {
-    const jobs = Array.from(this.jobs.values())
-      .filter((j) => j.chatId === context.chatId)
-      .map((j) => ({
-        id: j.id,
-        description: j.description,
-        cronExpr: j.cronExpr,
-        enabled: j.enabled,
-        lastRun: j.lastRun,
-      }));
+      const jobs = Array.from(this.jobs.values());
+      fs.writeFileSync(this.storePath, JSON.stringify(jobs, null, 2), 'utf-8');
+    } catch (err) {
+      this.logger.error(`[CronStore] Failed to save: ${(err as Error).message}`);
+    }
+  }
+}
+
+// ============================================================
+// 工具定义
+// ============================================================
+
+/** 列出定时任务 */
+class ListJobsTool extends BaseTool {
+  readonly definition: ToolDefinition = {
+    name: 'cron.list',
+    description: '列出当前聊天的所有定时任务',
+    inputSchema: {
+      type: 'object',
+      properties: {},
+      required: [],
+    },
+  };
+
+  private store: CronStore;
+
+  constructor(store: CronStore, logger: Logger) {
+    super(logger);
+    this.store = store;
+  }
+
+  async execute(_args: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
+    const jobs = this.store.getByChatId(context.chatId).map((j) => ({
+      id: j.id,
+      description: j.description,
+      cronExpr: j.cronExpr,
+      enabled: j.enabled,
+      lastRun: j.lastRun,
+    }));
 
     return this.success({ jobs });
   }
+}
 
-  private createJob(args: Record<string, unknown>, context: ToolContext): ToolResult {
+/** 创建定时任务 */
+class CreateJobTool extends BaseTool {
+  readonly definition: ToolDefinition = {
+    name: 'cron.create',
+    description: '创建定时任务',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        cronExpr: { type: 'string', description: 'Cron 表达式（如 "0 9 * * 1-5" 表示工作日 9:00）' },
+        prompt: { type: 'string', description: '任务执行时的提示词' },
+        description: { type: 'string', description: '任务描述（可选）' },
+      },
+      required: ['cronExpr', 'prompt'],
+    },
+  };
+
+  private store: CronStore;
+  private defaultLanguage: CronLanguage;
+
+  constructor(store: CronStore, defaultLanguage: CronLanguage, logger: Logger) {
+    super(logger);
+    this.store = store;
+    this.defaultLanguage = defaultLanguage;
+  }
+
+  async execute(args: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
     const cronExpr = args.cronExpr as string;
     const prompt = args.prompt as string;
     const description = args.description as string;
@@ -143,68 +201,145 @@ export class CronTool extends BaseTool {
       createdAt: Date.now(),
     };
 
-    this.jobs.set(id, job);
-    this.save();
+    this.store.set(job);
 
     return this.success({
       message: '定时任务创建成功',
       jobId: id,
-      humanReadable: cronExprToHuman(cronExpr, this.config.defaultLanguage || 'zh'),
+      humanReadable: cronExprToHuman(cronExpr, this.defaultLanguage),
     });
   }
+}
 
-  private deleteJob(args: Record<string, unknown>): ToolResult {
+/** 删除定时任务 */
+class DeleteJobTool extends BaseTool {
+  readonly definition: ToolDefinition = {
+    name: 'cron.delete',
+    description: '删除定时任务',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        jobId: { type: 'string', description: '任务 ID' },
+      },
+      required: ['jobId'],
+    },
+  };
+
+  private store: CronStore;
+
+  constructor(store: CronStore, logger: Logger) {
+    super(logger);
+    this.store = store;
+  }
+
+  async execute(args: Record<string, unknown>): Promise<ToolResult> {
     const jobId = args.jobId as string;
 
-    if (!jobId || !this.jobs.has(jobId)) {
+    if (!jobId || !this.store.get(jobId)) {
       return this.error('Job not found');
     }
 
-    this.jobs.delete(jobId);
-    this.save();
+    this.store.delete(jobId);
 
     return this.success({ message: '定时任务已删除' });
   }
+}
 
-  private enableJob(args: Record<string, unknown>): ToolResult {
+/** 启用定时任务 */
+class EnableJobTool extends BaseTool {
+  readonly definition: ToolDefinition = {
+    name: 'cron.enable',
+    description: '启用定时任务',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        jobId: { type: 'string', description: '任务 ID' },
+      },
+      required: ['jobId'],
+    },
+  };
+
+  private store: CronStore;
+
+  constructor(store: CronStore, logger: Logger) {
+    super(logger);
+    this.store = store;
+  }
+
+  async execute(args: Record<string, unknown>): Promise<ToolResult> {
     const jobId = args.jobId as string;
-    const job = this.jobs.get(jobId);
 
-    if (!job) {
+    if (!this.store.update(jobId, { enabled: true })) {
       return this.error('Job not found');
     }
-
-    job.enabled = true;
-    this.save();
 
     return this.success({ message: '定时任务已启用' });
   }
+}
 
-  private disableJob(args: Record<string, unknown>): ToolResult {
+/** 禁用定时任务 */
+class DisableJobTool extends BaseTool {
+  readonly definition: ToolDefinition = {
+    name: 'cron.disable',
+    description: '禁用定时任务',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        jobId: { type: 'string', description: '任务 ID' },
+      },
+      required: ['jobId'],
+    },
+  };
+
+  private store: CronStore;
+
+  constructor(store: CronStore, logger: Logger) {
+    super(logger);
+    this.store = store;
+  }
+
+  async execute(args: Record<string, unknown>): Promise<ToolResult> {
     const jobId = args.jobId as string;
-    const job = this.jobs.get(jobId);
 
-    if (!job) {
+    if (!this.store.update(jobId, { enabled: false })) {
       return this.error('Job not found');
     }
 
-    job.enabled = false;
-    this.save();
-
     return this.success({ message: '定时任务已禁用' });
   }
+}
 
-  private runJob(args: Record<string, unknown>, context: ToolContext): ToolResult {
+/** 立即执行任务 */
+class RunJobTool extends BaseTool {
+  readonly definition: ToolDefinition = {
+    name: 'cron.run',
+    description: '立即执行定时任务',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        jobId: { type: 'string', description: '任务 ID' },
+      },
+      required: ['jobId'],
+    },
+  };
+
+  private store: CronStore;
+
+  constructor(store: CronStore, logger: Logger) {
+    super(logger);
+    this.store = store;
+  }
+
+  async execute(args: Record<string, unknown>): Promise<ToolResult> {
     const jobId = args.jobId as string;
-    const job = this.jobs.get(jobId);
+    const job = this.store.get(jobId);
 
     if (!job) {
       return this.error('Job not found');
     }
 
     // 更新最后运行时间
-    job.lastRun = Date.now();
-    this.save();
+    this.store.update(jobId, { lastRun: Date.now() });
 
     // 返回提示词，让调用方执行
     return this.success({
@@ -212,42 +347,32 @@ export class CronTool extends BaseTool {
       prompt: job.prompt,
     });
   }
-
-  // ============================================================
-  // 持久化
-  // ============================================================
-
-  private load(): void {
-    try {
-      if (!fs.existsSync(this.storePath)) return;
-
-      const data = fs.readFileSync(this.storePath, 'utf-8');
-      const jobs = JSON.parse(data) as CronJob[];
-
-      for (const job of jobs) {
-        this.jobs.set(job.id, job);
-      }
-
-      this.logger.info(`[CronTool] Loaded ${this.jobs.size} jobs`);
-    } catch (err) {
-      this.logger.error(`[CronTool] Failed to load: ${(err as Error).message}`);
-    }
-  }
-
-  private save(): void {
-    try {
-      const dir = path.dirname(this.storePath);
-      if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
-      }
-
-      const jobs = Array.from(this.jobs.values());
-      fs.writeFileSync(this.storePath, JSON.stringify(jobs, null, 2), 'utf-8');
-    } catch (err) {
-      this.logger.error(`[CronTool] Failed to save: ${(err as Error).message}`);
-    }
-  }
 }
+
+// ============================================================
+// 工具集工厂
+// ============================================================
+
+/**
+ * Cron 工具集
+ * 
+ * 创建所有定时任务相关的独立工具
+ */
+export function createCronTools(config: CronToolConfig, logger: Logger): ITool[] {
+  const storePath = path.join(config.dataDir, 'cron-jobs.json');
+  const store = new CronStore(storePath, logger);
+  const defaultLanguage = config.defaultLanguage || 'zh';
+
+  return [
+    new ListJobsTool(store, logger),
+    new CreateJobTool(store, defaultLanguage, logger),
+    new DeleteJobTool(store, logger),
+    new EnableJobTool(store, logger),
+    new DisableJobTool(store, logger),
+    new RunJobTool(store, logger),
+  ];
+}
+
 
 // ============================================================
 // 辅助函数

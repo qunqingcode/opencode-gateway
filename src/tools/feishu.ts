@@ -1,5 +1,5 @@
 /**
- * 飞书消息发送工具
+ * 飞书消息发送工具集
  * 
  * 提供飞书特有的消息发送能力：
  * - 发送文件
@@ -9,25 +9,23 @@
 
 import type { Logger } from '../types';
 import { BaseTool } from './base';
-import type { ToolDefinition, ToolResult, ToolContext } from './types';
+import type { ToolDefinition, ToolResult, ToolContext, ITool } from './types';
 
 // ============================================================
-// 飞书工具
+// 工具定义
 // ============================================================
 
-export class FeishuTool extends BaseTool {
+/** 发送文件 */
+class SendFileTool extends BaseTool {
   readonly definition: ToolDefinition = {
-    name: 'feishu',
-    description: '飞书消息发送工具：发送文件、图片、富文本',
+    name: 'feishu.send_file',
+    description: '发送文件到飞书',
     inputSchema: {
       type: 'object',
       properties: {
-        action: {
-          type: 'string',
-          description: '操作类型: send_file, send_image, send_rich_text',
-        },
+        filePath: { type: 'string', description: '文件路径' },
       },
-      required: ['action'],
+      required: ['filePath'],
     },
   };
 
@@ -36,25 +34,6 @@ export class FeishuTool extends BaseTool {
   }
 
   async execute(args: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
-    const action = args.action as string;
-
-    switch (action) {
-      case 'send_file':
-        return this.sendFile(args, context);
-      case 'send_image':
-        return this.sendImage(args, context);
-      case 'send_rich_text':
-        return this.sendRichText(args, context);
-      default:
-        return this.error(`Unknown action: ${action}`);
-    }
-  }
-
-  // ============================================================
-  // 发送文件
-  // ============================================================
-
-  private async sendFile(args: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
     const filePath = args.filePath as string;
 
     if (!filePath) {
@@ -71,19 +50,34 @@ export class FeishuTool extends BaseTool {
       message: `File sent: ${filePath}`,
     });
   }
+}
 
-  // ============================================================
-  // 发送图片
-  // ============================================================
+/** 发送图片 */
+class SendImageTool extends BaseTool {
+  readonly definition: ToolDefinition = {
+    name: 'feishu.send_image',
+    description: '发送图片到飞书',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        imagePath: { type: 'string', description: '图片路径' },
+      },
+      required: ['imagePath'],
+    },
+  };
 
-  private async sendImage(args: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
+  constructor(logger: Logger) {
+    super(logger);
+  }
+
+  async execute(args: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
     const imagePath = args.imagePath as string;
 
     if (!imagePath) {
       return this.error('imagePath is required');
     }
 
-    // 图片可以复用 sendFile，或者用 sendRichText
+    // 图片可以复用 sendFile
     if (context.sendFile) {
       await context.sendFile(imagePath);
       return this.success({
@@ -93,12 +87,32 @@ export class FeishuTool extends BaseTool {
 
     return this.error('sendImage not supported in current context');
   }
+}
 
-  // ============================================================
-  // 发送富文本
-  // ============================================================
+/** 发送富文本 */
+class SendRichTextTool extends BaseTool {
+  readonly definition: ToolDefinition = {
+    name: 'feishu.send_rich_text',
+    description: '发送富文本消息到飞书（文本+图片）',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        text: { type: 'string', description: '文本内容' },
+        images: {
+          type: 'array',
+          items: { type: 'string' },
+          description: '图片路径列表（可选）',
+        },
+      },
+      required: [],
+    },
+  };
 
-  private async sendRichText(args: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
+  constructor(logger: Logger) {
+    super(logger);
+  }
+
+  async execute(args: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
     const text = args.text as string;
     const images = args.images as string[] | undefined;
 
@@ -120,4 +134,21 @@ export class FeishuTool extends BaseTool {
       message: 'Rich text sent',
     });
   }
+}
+
+// ============================================================
+// 工具集工厂
+// ============================================================
+
+/**
+ * 飞书工具集
+ * 
+ * 创建所有飞书相关的独立工具
+ */
+export function createFeishuTools(logger: Logger): ITool[] {
+  return [
+    new SendFileTool(logger),
+    new SendImageTool(logger),
+    new SendRichTextTool(logger),
+  ];
 }

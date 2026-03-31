@@ -105,10 +105,30 @@ export class CLI {
    * 列出工具
    */
   private listTools(): void {
-    console.log('\n可用的工具:\n');
-    for (const tool of this.toolRegistry.listPublic()) {
-      console.log(`  ${tool.name}: ${tool.description}`);
+    console.log('\n可用工具:\n');
+    const tools = this.toolRegistry.listPublic();
+    
+    // 按命名空间分组
+    const groups = new Map<string, typeof tools>();
+    for (const tool of tools) {
+      const [namespace] = tool.name.split('.');
+      if (!groups.has(namespace)) {
+        groups.set(namespace, []);
+      }
+      groups.get(namespace)!.push(tool);
     }
+
+    // 输出
+    for (const [namespace, groupTools] of groups) {
+      console.log(`[${namespace}]`);
+      for (const tool of groupTools) {
+        const shortName = tool.name.replace(`${namespace}.`, '');
+        console.log(`  ${shortName}: ${tool.description}`);
+      }
+      console.log('');
+    }
+
+    console.log(`共 ${tools.length} 个工具`);
   }
 
   /**
@@ -119,14 +139,34 @@ export class CLI {
 OpenCode Gateway CLI
 
 用法:
-  gateway <tool> [--arg1 value1] [--arg2 value2]
+  gateway <tool.name> [--arg1 value1] [--arg2 value2]
   gateway list              列出所有工具
   gateway help              显示帮助
 
+工具命名:
+  <namespace>.<action>      如 gitlab.get_branches, zentao.get_bug
+
 示例:
-  gateway gitlab --action get_branches
-  gateway zentao --action get_bug --bugId 123
-  gateway workflow --action merge_and_close_bug --mrId 123 --bugId 456
+  # GitLab
+  gateway gitlab.get_branches
+  gateway gitlab.get_merge_requests --state open
+  gateway gitlab.create_branch --name feature/new --ref main
+
+  # 禅道
+  gateway zentao.get_bug --bugId 123
+  gateway zentao.get_bugs --status active
+  gateway zentao.close_bug --bugId 123 --comment "已修复"
+
+  # Workflow
+  gateway workflow.get_linked_bugs --mrId 45
+  gateway workflow.create_mr_for_bug --bugId 123
+
+  # 飞书
+  gateway feishu.send_file --filePath /path/to/file
+
+  # 定时任务
+  gateway cron.list
+  gateway cron.create --cronExpr "0 9 * * 1-5" --prompt "生成日报"
 `);
   }
 }

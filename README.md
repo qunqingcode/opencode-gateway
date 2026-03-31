@@ -75,7 +75,7 @@ src/
 │   ├── index.ts
 │   ├── types.ts                 # IChannel 接口
 │   └── feishu/                  # 飞书 Channel
-│       ├── index.ts             # FeishuClient
+│       ├── index.ts             # FeishuChannel
 │       ├── send.ts              # 消息发送
 │       ├── receive.ts           # 消息接收
 │       └── card/                # 卡片构建
@@ -247,15 +247,16 @@ npm start
 除了 MCP 模式，还支持 CLI 直接调用工具：
 
 ```bash
-# 设置模式
-MODE=cli
+# 启动服务
+npm start
 
-# 运行
+# 调用工具（工具名格式: namespace.action）
 gateway list                          # 列出所有工具
-gateway gitlab --action get_branches  # 获取分支
-gateway zentao --action get_bug --bugId 123  # 查询 Bug
-gateway feishu --action send_file --filePath /path/to/file  # 发送文件
-gateway cron --action list            # 列出定时任务
+gateway gitlab.get_branches           # 获取分支
+gateway gitlab.get_merge_requests --state open  # 获取 MR
+gateway zentao.get_bug --bugId 123   # 查询 Bug
+gateway feishu.send_file --filePath /path/to/file  # 发送文件
+gateway cron.list                     # 列出定时任务
 ```
 
 ---

@@ -163,20 +163,16 @@ registerChannel(channel: IChannel): void {
     // ============================================================
     // 处理工具交互
     // ============================================================
-    // 解析工具名和参数
-    const [namespace, ...rest] = action.split('.');
-    const toolName = rest.join('.');
+    // 新架构：工具名称格式为 gitlab.create_mr_confirm
+    // action 就是完整的工具名称
+    const toolName = action;
     const toolArgs = ((value as Record<string, unknown>)?.args as Record<string, unknown>) || value;
 
     // 构建工具上下文
     const context = this.createToolContext(event);
 
     // 执行工具
-    const result = await this.toolRegistry.execute(
-      namespace === 'workflow' ? 'workflow' : namespace,
-      { action: toolName, ...toolArgs },
-      context
-    );
+    const result = await this.toolRegistry.execute(toolName, toolArgs, context);
 
     return {
       toast: result.success

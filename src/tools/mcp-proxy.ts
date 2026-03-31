@@ -1,7 +1,7 @@
 /**
  * MCP Proxy Tool
  * 
- * 将 Stdio MCP Server 包装成 Tool，放入 tools 层
+ * 将 Stdio MCP Server 的工具动态代理为独立工具
  * 
  * 用途：集成第三方 MCP Server（如 lark-mcp、github-mcp）
  */
@@ -9,7 +9,7 @@
 import { spawn, ChildProcess } from 'child_process';
 import type { Logger } from '../types';
 import { BaseTool } from './base';
-import type { ToolResult, ToolContext, JSONSchema } from './types';
+import type { ToolDefinition, ToolResult, ToolContext, ITool, JSONSchema } from './types';
 
 // ============================================================
 // 内部类型定义
@@ -46,19 +46,12 @@ interface JSONRPCResponse {
   };
 }
 
-/** MCP 工具调用结果 */
-interface MCPToolResult {
-  success: boolean;
-  output?: unknown;
-  error?: string;
-}
-
 // ============================================================
 // 配置类型
 // ============================================================
 
 export interface MCPProxyToolConfig {
-  /** 工具名称（命名空间前缀） */
+  /** 工具命名空间前缀（如 'lark', 'github'） */
   name: string;
   /** 工具描述 */
   description?: string;
@@ -149,7 +142,7 @@ class StdioMCPServer {
     return Array.from(this.tools.values());
   }
 
-  async callTool(toolName: string, args: Record<string, unknown>): Promise<MCPToolResult> {
+  async callTool(toolName: string, args: Record<string, unknown>): Promise<ToolResult> {
     if (!this.tools.has(toolName)) {
       return { success: false, error: `Unknown tool: ${toolName}` };
     }
@@ -245,45 +238,70 @@ class StdioMCPServer {
 }
 
 // ============================================================
+// 动态代理工具
+// ============================================================
+
+/**
+ * 单个 MCP 工具的代理
+ * 
+ * 将 MCP Server 的一个工具包装为独立工具
+ */
+class MCPToolProxy extends BaseTool {
+  readonly definition: ToolDefinition;
+
+  private namespace: string;
+  private toolName: string;
+  private mcpServer: StdioMCPServer;
+
+  constructor(namespace: string, tool: MCPToolInfo, mcpServer: StdioMCPServer, logger: Logger) {
+    super(logger);
+    this.namespace = namespace;
+    this.toolName = tool.name;
+    this.mcpServer = mcpServer;
+
+    // 构建工具定义
+    this.definition = {
+      name: `${namespace}.${tool.name}`,
+      description: tool.description || `MCP tool: ${tool.name}`,
+      inputSchema: this.buildInputSchema(tool.inputSchema),
+    };
+  }
+
+  async execute(args: Record<string, unknown>): Promise<ToolResult> {
+    return this.mcpServer.callTool(this.toolName, args);
+  }
+
+  private buildInputSchema(schema?: MCPToolInfo['inputSchema']): JSONSchema {
+    if (!schema || schema.type !== 'object') {
+      return { type: 'object', properties: {} };
+    }
+    return {
+      type: 'object',
+      properties: (schema.properties as JSONSchema['properties']) || {},
+      required: schema.required,
+    };
+  }
+}
+
+// ============================================================
 // MCP Proxy Tool（对外暴露）
 // ============================================================
 
 /**
  * MCP Proxy Tool
  * 
- * 启动 STDIO MCP Server 作为子进程，动态发现工具，代理调用
+ * 启动 STDIO MCP Server，动态发现工具并创建独立工具代理
  */
-export class MCPProxyTool extends BaseTool {
-  readonly definition: {
-    name: string;
-    description: string;
-    inputSchema: JSONSchema;
-    requiresApproval?: boolean;
-    internal?: boolean;
-  };
-
+export class MCPProxyTool {
   private config: MCPProxyToolConfig;
   private mcpServer: StdioMCPServer;
-  private discoveredActions: Map<string, { description: string; inputSchema?: unknown }> = new Map();
+  private tools: ITool[] = [];
+  private logger: Logger;
 
   constructor(config: MCPProxyToolConfig, logger: Logger) {
-    super(logger);
     this.config = config;
+    this.logger = logger;
 
-    // 初始定义
-    this.definition = {
-      name: config.name,
-      description: config.description || `MCP Server: ${config.name}`,
-      inputSchema: {
-        type: 'object',
-        properties: {
-          action: { type: 'string', description: '操作类型（启动后动态发现）' },
-        },
-        required: ['action'],
-      },
-    };
-
-    // 创建内部 MCP Server
     const command = typeof config.command === 'function' ? config.command() : config.command;
     this.mcpServer = new StdioMCPServer(config.name, command, logger, config.env, config.cwd);
   }
@@ -294,8 +312,8 @@ export class MCPProxyTool extends BaseTool {
 
   async start(): Promise<void> {
     await this.mcpServer.start();
-    this.updateDefinition();
-    this.logger.info(`[MCPProxy:${this.config.name}] Ready with ${this.discoveredActions.size} actions`);
+    this.createToolProxies();
+    this.logger.info(`[MCPProxy:${this.config.name}] Created ${this.tools.length} tools`);
   }
 
   async stop(): Promise<void> {
@@ -303,75 +321,37 @@ export class MCPProxyTool extends BaseTool {
   }
 
   // ============================================================
-  // 工具执行
+  // 获取工具
   // ============================================================
 
-  async execute(args: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
-    const action = args.action as string;
-
-    if (!action) {
-      return this.error('Missing action parameter');
-    }
-
-    if (!this.discoveredActions.has(action)) {
-      const available = Array.from(this.discoveredActions.keys()).join(', ');
-      return this.error(`Unknown action: ${action}. Available: ${available}`);
-    }
-
-    try {
-      this.logger.info(`[MCPProxy:${this.config.name}] Executing: ${action}`);
-
-      // 提取实际参数（去掉 action 字段）
-      const toolArgs = { ...args };
-      delete toolArgs.action;
-
-      const result = await this.mcpServer.callTool(action, toolArgs);
-
-      if (result.success) {
-        return this.success(result.output);
-      } else {
-        return this.error(result.error || 'Unknown error');
-      }
-    } catch (error) {
-      this.logger.error(`[MCPProxy:${this.config.name}] Failed: ${(error as Error).message}`);
-      return this.error((error as Error).message);
-    }
+  /**
+   * 获取所有代理工具
+   * 
+   * 返回独立工具实例，可直接注册到 ToolRegistry
+   */
+  getTools(): ITool[] {
+    return this.tools;
   }
 
   // ============================================================
   // 内部方法
   // ============================================================
 
-  private updateDefinition(): void {
-    const tools = this.mcpServer.listTools();
-    const actionDescriptions: string[] = [];
-
-    this.discoveredActions.clear();
-
-    for (const tool of tools) {
-      this.discoveredActions.set(tool.name, {
-        description: tool.description || tool.name,
-        inputSchema: tool.inputSchema,
-      });
-      actionDescriptions.push(`${tool.name}: ${tool.description || tool.name}`);
-    }
-
-    this.definition.inputSchema = {
-      type: 'object',
-      properties: {
-        action: {
-          type: 'string',
-          description: `操作类型:\n${actionDescriptions.join('\n')}`,
-        },
-      },
-      required: ['action'],
-    };
+  private createToolProxies(): void {
+    const mcpTools = this.mcpServer.listTools();
+    this.tools = mcpTools.map(tool => 
+      new MCPToolProxy(this.config.name, tool, this.mcpServer, this.logger)
+    );
   }
+}
 
-  /**
-   * 获取发现的工具列表
-   */
-  getDiscoveredActions(): string[] {
-    return Array.from(this.discoveredActions.keys());
-  }
+/**
+ * 创建 MCP Proxy 工具
+ * 
+ * @returns 工具实例数组，可直接注册
+ */
+export async function createMCPProxyTools(config: MCPProxyToolConfig, logger: Logger): Promise<ITool[]> {
+  const proxy = new MCPProxyTool(config, logger);
+  await proxy.start();
+  return proxy.getTools();
 }

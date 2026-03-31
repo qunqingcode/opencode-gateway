@@ -8,7 +8,7 @@
  * 
  * 用法:
  *   gateway list                      列出所有工具
- *   gateway <tool> --action <action>  执行工具
+ *   gateway <tool.name> [--arg val]   执行工具
  *   gateway help                      显示帮助
  */
 
@@ -77,7 +77,7 @@ async function listMCPTools() {
     const req = http.request({
       hostname: MCP_HOST,
       port: MCP_PORT,
-      path: '/tools/list',
+      path: '/tools',
       method: 'GET',
       timeout: 5000,
     }, (res) => {
@@ -134,11 +134,29 @@ async function listTools() {
     const result = await listMCPTools();
     
     if (result.tools && Array.isArray(result.tools)) {
-      console.log('\n可用的工具:\n');
+      console.log('\n可用工具:\n');
+      
+      // 按命名空间分组
+      const groups = new Map();
       for (const tool of result.tools) {
-        console.log(`  ${tool.name}: ${tool.description || ''}`);
+        const [namespace] = tool.name.split('.');
+        if (!groups.has(namespace)) {
+          groups.set(namespace, []);
+        }
+        groups.get(namespace).push(tool);
       }
-      console.log('');
+      
+      // 输出
+      for (const [namespace, tools] of groups) {
+        console.log(`[${namespace}]`);
+        for (const tool of tools) {
+          const shortName = tool.name.replace(`${namespace}.`, '');
+          console.log(`  ${shortName}: ${tool.description || ''}`);
+        }
+        console.log('');
+      }
+      
+      console.log(`共 ${result.tools.length} 个工具`);
     } else {
       console.log('Tools:', JSON.stringify(result, null, 2));
     }
@@ -189,16 +207,34 @@ CLI 是 MCP Server 的客户端，需要先启动服务：
   npm start
 
 用法:
-  gateway <tool> [--arg1 value1] [--arg2 value2]
+  gateway <tool.name> [--arg1 value1] [--arg2 value2]
   gateway list              列出所有工具
   gateway help              显示帮助
 
+工具命名:
+  <namespace>.<action>      如 gitlab.get_branches, zentao.get_bug
+
 示例:
-  gateway list
-  gateway gitlab --action get_branches
-  gateway zentao --action get_bug --bugId 123
-  gateway feishu --action send_file --filePath C:/test.txt
-  gateway cron --action list
+  # GitLab
+  gateway gitlab.get_branches
+  gateway gitlab.get_merge_requests --state open
+  gateway gitlab.create_branch --name feature/new --ref main
+
+  # 禅道
+  gateway zentao.get_bug --bugId 123
+  gateway zentao.get_bugs --status active
+  gateway zentao.close_bug --bugId 123 --comment "已修复"
+
+  # Workflow
+  gateway workflow.get_linked_bugs --mrId 45
+  gateway workflow.create_mr_for_bug --bugId 123
+
+  # 飞书
+  gateway feishu.send_file --filePath /path/to/file
+
+  # 定时任务
+  gateway cron.list
+  gateway cron.create --cronExpr "0 9 * * 1-5" --prompt "生成日报"
 `);
 }
 

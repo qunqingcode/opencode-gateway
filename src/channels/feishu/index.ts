@@ -307,17 +307,3 @@ export class FeishuChannel extends BaseChannel {
 export function createFeishuChannel(config: FeishuConfig, logger: Logger): FeishuChannel {
   return new FeishuChannel(config, logger);
 }
-
-// ============================================================
-// 兼容性导出（逐步迁移）
-// ============================================================
-
-/**
- * @deprecated 使用 FeishuChannel 代替
- */
-export const FeishuClient = FeishuChannel;
-
-/**
- * @deprecated 使用 createFeishuChannel 代替
- */
-export const createFeishuApiClient = createFeishuChannel;

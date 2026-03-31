@@ -33,11 +33,6 @@ export {
   // Channel 类
   FeishuChannel,
   createFeishuChannel,
-  
-  // 兼容性导出（deprecated）
-  FeishuClient,
-  createFeishuApiClient,
-  
   // 配置类型
   type FeishuConfig,
   

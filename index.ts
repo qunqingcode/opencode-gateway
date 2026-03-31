@@ -15,8 +15,8 @@ import { appLogger as logger } from './src/utils/logger';
 import { loadConfigFromEnv } from './src/config';
 import { Gateway } from './src/gateway';
 import { MCPHTTPServer } from './src/callers';
-import { ToolRegistry, GitLabTool, ZentaoTool, WorkflowTool, FeishuTool, CronTool, MCPProxyTool } from './src/tools';
-import { FeishuClient } from './src/channels/feishu';
+import { ToolRegistry, createAllTools } from './src/tools';
+import { FeishuChannel } from './src/channels';
 
 // ============================================================
 // 启动
@@ -29,50 +29,19 @@ async function main() {
   // 创建工具注册表
   const toolRegistry = new ToolRegistry(logger);
 
-  // 注册飞书消息发送工具（始终启用）
-  toolRegistry.register(new FeishuTool(logger));
-
-  // 注册 Cron 定时任务工具（始终启用）
-  toolRegistry.register(new CronTool({
+  // 创建并注册所有工具
+  const tools = await createAllTools({
     dataDir: config.dataDir,
-    defaultLanguage: 'zh',
-  }, logger));
+    ...config.tools,
+    mcpServers: config.mcpServers,
+  }, logger);
 
-  // 注册 GitLab 工具
-  if (config.tools.gitlab?.enabled) {
-    toolRegistry.register(new GitLabTool(config.tools.gitlab, logger));
-  }
+  toolRegistry.registerAll(tools);
 
-  // 注册禅道工具
-  if (config.tools.zentao?.enabled) {
-    toolRegistry.register(new ZentaoTool(config.tools.zentao, logger));
-  }
-
-  // 注册 Workflow 工具（需要 GitLab + 禅道）
-  if (config.tools.workflow?.enabled && config.tools.gitlab && config.tools.zentao) {
-    toolRegistry.register(new WorkflowTool({
-      gitlab: config.tools.gitlab,
-      zentao: config.tools.zentao,
-    }, logger));
-  }
-
-  // 注册第三方 MCP Server 工具
-  if (config.mcpServers) {
-    for (const [name, serverConfig] of Object.entries(config.mcpServers)) {
-      if (serverConfig.enabled) {
-        const mcpTool = new MCPProxyTool({
-          name,
-          command: serverConfig.command,
-          description: serverConfig.description,
-          env: serverConfig.env,
-          cwd: serverConfig.cwd,
-        }, logger);
-
-        toolRegistry.register(mcpTool);
-        logger.info(`[Startup] Registered MCP Server: ${name}`);
-      }
-    }
-  }
+  // 输出工具统计
+  const publicTools = toolRegistry.listPublic();
+  const internalTools = tools.length - publicTools.length;
+  logger.info(`[Startup] Registered ${publicTools.length} public tools, ${internalTools} internal tools`);
 
   // 创建 Gateway
   const gateway = new Gateway({
@@ -85,7 +54,7 @@ async function main() {
 
   // 注册飞书渠道
   if (config.channels.feishu?.enabled) {
-    const feishu = new FeishuClient({
+    const feishu = new FeishuChannel({
       id: 'feishu',
       appId: config.channels.feishu.appId,
       appSecret: config.channels.feishu.appSecret,
