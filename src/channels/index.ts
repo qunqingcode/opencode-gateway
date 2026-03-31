@@ -1,92 +1,68 @@
 /**
- * Channels 层模块
+ * Channel 层导出
  * 
- * 职责：
- * 1. 定义统一的渠道接口
- * 2. 管理渠道注册和发现
- * 3. 提供标准化消息格式
+ * Channel = IM 渠道（有连接、有状态）
+ * Client = API 客户端（无状态）
  */
 
 // ============================================================
-// 类型导出
+// 基类
+// ============================================================
+
+export { BaseChannel, type ChannelConnectionState } from './base';
+
+// ============================================================
+// 类型
 // ============================================================
 
 export type {
-  ChannelType,
-  MessageSource,
-  StandardMessage,
-  MediaPayload,
-  CardAction,
-  ApprovalCard,
-  OutboundAdapter,
-  AuthAdapter,
-  SecurityAdapter,
-  LifecycleAdapter,
-  ChannelPlugin,
+  IChannel,
   MessageHandler,
   InteractionHandler,
+  StandardMessage,
   InteractionEvent,
   InteractionResult,
-  ChannelConfig,
-  ChannelFactory,
-  Logger,
+  SendResult,
 } from './types';
 
 // ============================================================
-// Registry 导出
+// 飞书 Channel
 // ============================================================
 
-export { registerChannel, getChannelRegistry, getRegisteredChannelTypes } from './registry';
-
-// ============================================================
-// Channel 创建
-// ============================================================
-
-import type { ChannelPlugin, ChannelConfig, Logger } from './types';
-import { getChannelRegistry } from './registry';
-
-/**
- * 创建渠道实例
- */
-export function createChannel(config: ChannelConfig, logger: Logger): ChannelPlugin | null {
-  const registry = getChannelRegistry();
-  const factory = registry.get(config.type);
-  if (!factory) {
-    logger.warn(`Unknown channel type: ${config.type}`);
-    return null;
-  }
-  return factory(config, logger);
-}
-
-// ============================================================
-// 消息格式化工具
-// ============================================================
-
-/**
- * 格式化消息来源字符串
- */
-export function formatMessageSource(source: import('./types').MessageSource): string {
-  return `[${source.channelType}] chat=${source.chatId}, user=${source.userId}`;
-}
-
-/**
- * 创建标准化消息
- */
-export function createStandardMessage(
-  source: import('./types').MessageSource,
-  text: string,
-  raw?: unknown
-): import('./types').StandardMessage {
-  return {
-    source,
-    content: { text },
-    raw,
-  };
-}
-
-// ============================================================
-// 导入所有 Channel 实现，触发自动注册
-// 必须放在最后，确保 registry 已经导出
-// ============================================================
-
-import './feishu';
+export {
+  // Channel 类
+  FeishuChannel,
+  createFeishuChannel,
+  
+  // 兼容性导出（deprecated）
+  FeishuClient,
+  createFeishuApiClient,
+  
+  // 配置类型
+  type FeishuConfig,
+  
+  // 发送功能
+  createFeishuClient,
+  sendTextMessage,
+  sendMediaMessage,
+  sendCardMessage,
+  uploadAndSendFile,
+  sendRichTextMessage,
+  uploadImage,
+  type FeishuSendResult,
+  
+  // 连接管理
+  startFeishuProvider,
+  type FeishuProviderOptions,
+  
+  // 卡片
+  FeishuCardBuilder,
+  ActionBuilder,
+  createFeishuCardInteractionEnvelope,
+  buildFeishuCardInteractionContext,
+  decodeFeishuCardAction,
+  FEISHU_CARD_DEFAULT_TTL_MS,
+  type FeishuCard,
+  type FeishuCardInteractionEnvelope,
+  type DecodedFeishuCardAction,
+} from './feishu';

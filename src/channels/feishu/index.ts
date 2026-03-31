@@ -1,36 +1,77 @@
 /**
- * 飞书 Channel 实现
+ * 飞书 Channel 模块
  * 
- * 参考 OpenClaw 的 Channel Adapter 设计：
- * - 只做消息格式转换和路由规则
- * - 不依赖 Provider，直接使用 Client
+ * 提供：
+ * - FeishuChannel: 飞书 IM 渠道（连接、消息、卡片）
+ * - FeishuCardBuilder: 卡片构建器
+ * - 发送/接收功能函数
+ * 
+ * Channel = IM 渠道（有连接、有状态）
+ * Client = API 客户端（无状态）
  */
 
-import type {
-  ChannelPlugin,
-  ChannelConfig,
-  StandardMessage,
-  MessageHandler,
-  InteractionHandler,
-  OutboundAdapter,
-  LifecycleAdapter,
-  Logger,
-} from '../types';
-import type { ChannelFactory } from '../types';
-import {
-  FeishuClient,
-  createFeishuApiClient,
-  type FeishuConfig,
-} from '../../api/feishu';
-import { sendRichTextMessage, uploadImage } from '../../api/feishu/send';
+import * as Lark from '@larksuiteoapi/node-sdk';
+import { BaseChannel } from '../base';
+import type { Logger } from '../../types';
+import type { StandardMessage, InteractionEvent, InteractionResult, SendResult } from '../types';
+import { sendTextMessage, sendMediaMessage, sendCardMessage, createFeishuClient, uploadAndSendFile, sendRichTextMessage, uploadImage } from './send';
+import { startFeishuProvider, FeishuProviderOptions } from './receive';
 
 // ============================================================
-// 飞书配置
+// 导出卡片模块
 // ============================================================
 
-export interface FeishuChannelConfig extends ChannelConfig {
-  type: 'feishu';
-  name?: string;
+export {
+  // 卡片交互协议
+  createFeishuCardInteractionEnvelope,
+  buildFeishuCardInteractionContext,
+  decodeFeishuCardAction,
+  FEISHU_CARD_DEFAULT_TTL_MS,
+
+  // 卡片构建器
+  FeishuCardBuilder,
+  ActionBuilder,
+  buildFeishuCardButton,
+  createTextCard,
+  createConfirmCard,
+  createListCard,
+
+  // 类型
+  type FeishuCard,
+  type FeishuCardInteractionEnvelope,
+  type DecodedFeishuCardAction,
+} from './card';
+
+// ============================================================
+// 导出发送功能
+// ============================================================
+
+export {
+  createFeishuClient,
+  sendTextMessage,
+  sendMediaMessage,
+  sendCardMessage,
+  uploadAndSendFile,
+  sendRichTextMessage,
+  uploadImage,
+  type FeishuSendResult,
+} from './send';
+
+// ============================================================
+// 导出连接管理
+// ============================================================
+
+export {
+  startFeishuProvider,
+  type FeishuProviderOptions,
+} from './receive';
+
+// ============================================================
+// 配置类型
+// ============================================================
+
+export interface FeishuConfig {
+  id: string;
   appId: string;
   appSecret: string;
   connectionMode?: 'websocket' | 'webhook';
@@ -43,248 +84,235 @@ export interface FeishuChannelConfig extends ChannelConfig {
 }
 
 // ============================================================
-// FeishuChannel 实现
+// FeishuChannel - 飞书 IM 渠道
 // ============================================================
 
-export class FeishuChannel implements ChannelPlugin {
+/**
+ * 飞书 Channel
+ * 
+ * 实现 IM 渠道功能：
+ * - WebSocket/Webhook 连接管理
+ * - 消息接收与发送
+ * - 卡片交互处理
+ * 
+ * 继承 BaseChannel 保持与其他 Channel 的一致性
+ */
+export class FeishuChannel extends BaseChannel {
+  readonly name = 'Feishu';
   readonly id: string;
-  readonly type = 'feishu' as const;
-  readonly name: string;
 
-  private client: FeishuClient;
-  private logger: Logger;
-  private messageHandler: MessageHandler | null = null;
-  private interactionHandler: InteractionHandler | null = null;
-  private _outbound: OutboundAdapter | null = null;
+  private client: InstanceType<typeof Lark.Client>;
+  private config: FeishuConfig;
+  private stopFn: (() => void) | null = null;
 
-  constructor(config: FeishuChannelConfig, logger: Logger) {
+  constructor(config: FeishuConfig, logger: Logger) {
+    super(logger);
+
     this.id = config.id;
-    this.name = config.name ?? 'Feishu';
-    this.logger = logger;
+    this.config = config;
 
-    // 创建底层 Client
-    this.client = createFeishuApiClient({
-      id: config.id,
+    this.client = createFeishuClient({
       appId: config.appId,
       appSecret: config.appSecret,
-      connectionMode: config.connectionMode,
       domain: config.domain,
-      webhookPort: config.webhookPort,
-      webhookPath: config.webhookPath,
-      encryptKey: config.encryptKey,
-      verificationToken: config.verificationToken,
-      botNames: config.botNames,
-    }, logger);
-
-    // 初始化 outbound adapter
-    this._outbound = {
-      // ============================================================
-      // 纯文本消息
-      // ============================================================
-      sendText: async (chatId: string, text: string, options?: { replyTo?: string }) => {
-        this.logger.info(`[FeishuChannel] sendText to ${chatId}`);
-        try {
-          const result = await this.client.sendText(chatId, text, options?.replyTo);
-          this.logger.info(`[FeishuChannel] sendText result: ok=${result.ok}`);
-          return { ok: result.ok, messageId: result.messageId };
-        } catch (err) {
-          this.logger.error(`[FeishuChannel] sendText error: ${(err as Error).message}`);
-          return { ok: false };
-        }
-      },
-
-      // ============================================================
-      // 富文本消息（文本 + 图片在一条消息里）
-      // ============================================================
-      sendRichText: async (chatId: string, text: string, images: string[], options?: { replyTo?: string }) => {
-        this.logger.info(`[FeishuChannel] sendRichText to ${chatId}, images=${images.length}`);
-        try {
-          // 上传图片获取 image_key
-          const imageKeys: string[] = [];
-          for (const imagePath of images) {
-            this.logger.info(`[FeishuChannel] Uploading image: ${imagePath}`);
-            const uploadResult = await uploadImage(this.client.getNativeClient(), imagePath);
-            if (uploadResult.ok && uploadResult.imageKey) {
-              imageKeys.push(uploadResult.imageKey);
-              this.logger.info(`[FeishuChannel] Image uploaded: ${uploadResult.imageKey}`);
-            } else {
-              this.logger.error(`[FeishuChannel] Image upload failed: ${uploadResult.error}`);
-            }
-          }
-
-          if (imageKeys.length === 0) {
-            // 没有图片，降级为纯文本
-            this.logger.info(`[FeishuChannel] No images, fallback to sendText`);
-            return await this._outbound!.sendText(chatId, text, options);
-          }
-
-          // 发送富文本消息
-          const result = await sendRichTextMessage(
-            this.client.getNativeClient(),
-            chatId,
-            text,
-            imageKeys,
-            options?.replyTo
-          );
-          this.logger.info(`[FeishuChannel] sendRichText result: ok=${result.ok}`);
-          return { ok: result.ok, messageId: result.messageId };
-        } catch (err) {
-          this.logger.error(`[FeishuChannel] sendRichText error: ${(err as Error).message}`);
-          return { ok: false };
-        }
-      },
-
-      // ============================================================
-      // 发送文件/图片（单独一条消息）
-      // ============================================================
-      sendFile: async (chatId: string, filePath: string, options?: { replyTo?: string }) => {
-        this.logger.info(`[FeishuChannel] sendFile to ${chatId}: ${filePath}`);
-        try {
-          const result = await this.client.uploadAndSendFile(
-            filePath,
-            chatId,
-            options?.replyTo
-          );
-          this.logger.info(`[FeishuChannel] sendFile result: ok=${result.ok}`);
-          return { ok: result.ok, messageId: result.messageId };
-        } catch (err) {
-          this.logger.error(`[FeishuChannel] sendFile error: ${(err as Error).message}`);
-          return { ok: false };
-        }
-      },
-
-      // ============================================================
-      // 卡片消息
-      // ============================================================
-      sendCard: async (chatId: string, card: unknown) => {
-        this.logger.info(`[FeishuChannel] sendCard to ${chatId}`);
-        try {
-          const result = await this.client.sendCard(chatId, card);
-          this.logger.info(`[FeishuChannel] sendCard result: ok=${result.ok}`);
-          return { ok: result.ok, messageId: result.messageId };
-        } catch (err) {
-          this.logger.error(`[FeishuChannel] sendCard error: ${(err as Error).message}`);
-          return { ok: false };
-        }
-      },
-
-      // ============================================================
-      // 媒体消息
-      // ============================================================
-      sendMedia: async (chatId: string, media: { url: string }, text?: string) => {
-        this.logger.info(`[FeishuChannel] sendMedia to ${chatId}`);
-        try {
-          const result = await this.client.sendMedia(chatId, media.url, text);
-          return { ok: result.ok, messageId: result.messageId };
-        } catch (err) {
-          this.logger.error(`[FeishuChannel] sendMedia error: ${(err as Error).message}`);
-          return { ok: false };
-        }
-      },
-    };
+    });
   }
 
   // ============================================================
-  // Outbound Adapter
+  // 消息发送（IChannel 接口实现）
   // ============================================================
 
-  get outbound(): OutboundAdapter {
-    return this._outbound!;
+  async sendText(chatId: string, text: string, replyToId?: string): Promise<SendResult> {
+    this.logger.info(`[FeishuChannel] sendText to ${chatId}`);
+    try {
+      const result = await sendTextMessage(this.client, chatId, text, replyToId);
+      this.logger.info(`[FeishuChannel] sendText result: ok=${result.ok}`);
+      return result;
+    } catch (err) {
+      this.logger.error(`[FeishuChannel] sendText error: ${(err as Error).message}`);
+      return { ok: false, error: (err as Error).message };
+    }
   }
 
-  // ============================================================
-  // Lifecycle Adapter
-  // ============================================================
+  async sendCard(chatId: string, card: unknown, replyToId?: string): Promise<SendResult> {
+    this.logger.info(`[FeishuChannel] sendCard to ${chatId}`);
+    try {
+      const result = await sendCardMessage(this.client, chatId, card as object, replyToId);
+      this.logger.info(`[FeishuChannel] sendCard result: ok=${result.ok}`);
+      return result;
+    } catch (err) {
+      this.logger.error(`[FeishuChannel] sendCard error: ${(err as Error).message}`);
+      return { ok: false, error: (err as Error).message };
+    }
+  }
 
-  readonly lifecycle: LifecycleAdapter = {
-    start: async () => {
-      // 注册消息处理器
-      this.client.onMessage(async (event) => {
-        if (this.messageHandler) {
-          const message: StandardMessage = {
-            source: {
-              channelId: this.id,
-              chatId: event.chatId,
-              userId: event.senderId || '',
-              messageId: event.messageId,
-              chatType: event.chatType === 'p2p' ? 'p2p' : 'group',
-            },
-            content: {
-              text: event.text,
-            },
-            raw: event,
-          };
-          await this.messageHandler(message);
+  async sendRichText(chatId: string, text: string, images: string[], replyToId?: string): Promise<SendResult> {
+    this.logger.info(`[FeishuChannel] sendRichText to ${chatId}, images=${images.length}`);
+    try {
+      // 上传图片获取 image_key
+      const imageKeys: string[] = [];
+      for (const imagePath of images) {
+        this.logger.info(`[FeishuChannel] Uploading image: ${imagePath}`);
+        const uploadResult = await uploadImage(this.client, imagePath);
+        if (uploadResult.ok && uploadResult.imageKey) {
+          imageKeys.push(uploadResult.imageKey);
+          this.logger.info(`[FeishuChannel] Image uploaded: ${uploadResult.imageKey}`);
+        } else {
+          this.logger.error(`[FeishuChannel] Image upload failed: ${uploadResult.error}`);
         }
-      });
+      }
 
-      // 注册交互处理器
-      this.client.onInteraction(async (event) => {
-        if (this.interactionHandler) {
-          const value = event.action?.value as Record<string, unknown> || {};
-          const contextData = value?.context as Record<string, unknown> | undefined;
-          const chatId = (contextData?.chatId as string) || '';
-          
-          return this.interactionHandler({
-            channelId: this.id,
-            userId: event.userId || '',
-            chatId,
-            messageId: event.open_message_id || '',
-            action: (value?.action as string) || 'custom',
-            value,
-          });
+      if (imageKeys.length === 0) {
+        // 没有图片，降级为纯文本
+        this.logger.info(`[FeishuChannel] No images uploaded, fallback to sendText`);
+        return this.sendText(chatId, text, replyToId);
+      }
+
+      // 发送富文本消息
+      const result = await sendRichTextMessage(this.client, chatId, text, imageKeys, replyToId);
+      this.logger.info(`[FeishuChannel] sendRichText result: ok=${result.ok}`);
+      return result;
+    } catch (err) {
+      this.logger.error(`[FeishuChannel] sendRichText error: ${(err as Error).message}`);
+      return { ok: false, error: (err as Error).message };
+    }
+  }
+
+  async sendFile(chatId: string, filePath: string, replyToId?: string): Promise<SendResult> {
+    this.logger.info(`[FeishuChannel] sendFile to ${chatId}: ${filePath}`);
+    try {
+      const result = await uploadAndSendFile(
+        this.client,
+        filePath,
+        chatId,
+        replyToId || '',
+        {
+          info: (msg) => this.logger.info(`[Feishu] ${msg}`),
+          error: (msg) => this.logger.error(`[Feishu] ${msg}`),
         }
-        return {};
-      });
-
-      // 连接
-      await this.client.connect();
-    },
-
-    stop: async () => {
-      this.client.disconnect();
-    },
-
-    healthCheck: async () => {
-      return this.client.healthCheck();
-    },
-  };
-
-  // ============================================================
-  // Message Handler Registration
-  // ============================================================
-
-  onMessage(handler: MessageHandler): void {
-    this.messageHandler = handler;
-  }
-
-  onInteraction(handler: InteractionHandler): void {
-    this.interactionHandler = handler;
+      );
+      this.logger.info(`[FeishuChannel] sendFile result: ok=${result.ok}`);
+      return result;
+    } catch (err) {
+      this.logger.error(`[FeishuChannel] sendFile error: ${(err as Error).message}`);
+      return { ok: false, error: (err as Error).message };
+    }
   }
 
   // ============================================================
-  // Client Access
+  // 额外方法（飞书特有，不在 IChannel 接口）
   // ============================================================
+
+  async sendMedia(chatId: string, mediaUrl: string, text?: string) {
+    return sendMediaMessage(this.client, chatId, mediaUrl, text);
+  }
 
   /**
-   * 获取底层 Client
+   * 上传图片（返回 imageKey）
    */
-  getClient(): FeishuClient {
+  async uploadImage(filePath: string) {
+    return uploadImage(this.client, filePath);
+  }
+
+  /**
+   * 获取底层 Lark Client
+   */
+  getNativeClient(): InstanceType<typeof Lark.Client> {
     return this.client;
+  }
+
+  // ============================================================
+  // 连接管理
+  // ============================================================
+
+  async connect(): Promise<void> {
+    const options: FeishuProviderOptions = {
+      account: {
+        accountId: this.id,
+        appId: this.config.appId,
+        appSecret: this.config.appSecret,
+        connectionMode: this.config.connectionMode,
+        domain: this.config.domain,
+        webhookPort: this.config.webhookPort,
+        webhookPath: this.config.webhookPath,
+        encryptKey: this.config.encryptKey,
+        verificationToken: this.config.verificationToken,
+        botNames: this.config.botNames,
+      },
+      log: {
+        info: (msg) => this.logger.info(`[Feishu] ${msg}`),
+        error: (msg) => this.logger.error(`[Feishu] ${msg}`),
+        warn: (msg) => this.logger.warn?.(`[Feishu] ${msg}`),
+        debug: (msg) => this.logger.debug?.(`[Feishu] ${msg}`),
+      },
+      onMessage: async (event) => {
+        // 飞书事件转换为 StandardMessage
+        const message: StandardMessage = {
+          source: {
+            channelId: this.id,
+            chatId: event.chatId,
+            userId: event.senderId,
+            messageId: event.messageId,
+            chatType: event.chatType,
+          },
+          content: { text: event.text },
+        };
+        await this.handleMessage(message);
+      },
+      onCardAction: this.hasInteractionHandler()
+        ? async (event) => {
+          // 飞书卡片事件转换为 InteractionEvent
+          const value = event.action.value;
+          const interactionEvent: InteractionEvent = {
+            channelId: this.id,
+            chatId: '', // 飞书卡片事件不包含 chatId，需要从上下文获取
+            userId: event.open_id || '',
+            messageId: event.open_message_id,
+            action: (value.kind as string) || '',
+            value,
+          };
+          return this.handleInteraction(interactionEvent);
+        }
+        : undefined,
+    };
+
+    const provider = startFeishuProvider(options);
+    this.stopFn = provider.stop;
+
+    this.markConnected();
+    this.logger.info(`[Feishu] Mode: ${this.config.connectionMode || 'websocket'}`);
+  }
+
+  disconnect(): void {
+    if (this.stopFn) {
+      this.stopFn();
+      this.stopFn = null;
+    }
+    this.markDisconnected();
   }
 }
 
 // ============================================================
-// Factory
+// 工厂函数
 // ============================================================
 
-export const createFeishuChannel: ChannelFactory<FeishuChannelConfig> = (
-  config,
-  logger
-) => {
+/**
+ * 创建飞书 Channel
+ */
+export function createFeishuChannel(config: FeishuConfig, logger: Logger): FeishuChannel {
   return new FeishuChannel(config, logger);
-};
+}
 
-// 注册到全局 registry
-import { registerChannel } from '../registry';
-registerChannel('feishu', createFeishuChannel as ChannelFactory);
+// ============================================================
+// 兼容性导出（逐步迁移）
+// ============================================================
+
+/**
+ * @deprecated 使用 FeishuChannel 代替
+ */
+export const FeishuClient = FeishuChannel;
+
+/**
+ * @deprecated 使用 createFeishuChannel 代替
+ */
+export const createFeishuApiClient = createFeishuChannel;

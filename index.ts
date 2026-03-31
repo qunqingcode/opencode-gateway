@@ -1,108 +1,133 @@
 /**
- * 应用入口 - 声明式配置
+ * OpenCode Gateway - 入口
  * 
- * 所有组件通过配置声明，自动注册和启动
+ * 六层架构：
+ * callers/ → gateway/ → agents/ + tools/ → channels/ + clients/
  */
 
 require('dotenv').config();
 
-import { createApp } from './src/app';
 import { appLogger as logger } from './src/utils/logger';
-
-// ============================================================
-// 声明式配置
-// ============================================================
-
-const app = createApp({
-  // 服务端口
-  port: parseInt(process.env.MCP_HTTP_PORT || '3100'),
-  
-  // OpenCode 配置
-  opencode: {
-    url: process.env.OPENCODE_API_URL || 'http://127.0.0.1:4096',
-    timeout: parseInt(process.env.OPENCODE_TIMEOUT || '600000'),
-    modelId: process.env.OPENCODE_MODEL_ID,
-    providerId: process.env.OPENCODE_PROVIDER_ID,
-  },
-  
-  // Channel 配置（IM 通信）
-  channels: {
-    feishu: {
-      enabled: !!(process.env.FEISHU_APP_ID && process.env.FEISHU_APP_SECRET),
-      appId: process.env.FEISHU_APP_ID,
-      appSecret: process.env.FEISHU_APP_SECRET,
-      connectionMode: process.env.FEISHU_CONNECTION_MODE as 'websocket' | 'webhook' || 'websocket',
-      domain: process.env.FEISHU_DOMAIN as 'feishu' | 'lark' || 'feishu',
-    },
-  },
-  
-  // MCP Server 配置
-  mcpServers: {
-    // 内置 MCP Server
-    zentao: {
-      enabled: !!(process.env.ZENTAO_BASE_URL),
-      baseUrl: process.env.ZENTAO_BASE_URL,
-      token: process.env.ZENTAO_TOKEN,
-      account: process.env.ZENTAO_ACCOUNT,
-      password: process.env.ZENTAO_PASSWORD,
-      projectId: process.env.ZENTAO_PROJECT_ID,
-    },
-    
-    gitlab: {
-      enabled: !!(process.env.GITLAB_URL && process.env.GITLAB_TOKEN),
-      baseUrl: process.env.GITLAB_URL,
-      token: process.env.GITLAB_TOKEN,
-      projectId: process.env.GITLAB_PROJECT_ID,
-    },
-    
-    workflow: {
-      // 自动检测：GitLab + 禅道都配置时启用
-      enabled: !!(process.env.GITLAB_URL && process.env.GITLAB_TOKEN && process.env.ZENTAO_BASE_URL),
-      gitlab: {
-        baseUrl: process.env.GITLAB_URL,
-        token: process.env.GITLAB_TOKEN,
-        projectId: process.env.GITLAB_PROJECT_ID,
-      },
-      zentao: {
-        baseUrl: process.env.ZENTAO_BASE_URL,
-        token: process.env.ZENTAO_TOKEN,
-        account: process.env.ZENTAO_ACCOUNT,
-        password: process.env.ZENTAO_PASSWORD,
-        projectId: process.env.ZENTAO_PROJECT_ID,
-      },
-    },
-    
-    // 第三方 MCP Server（通过 Stdio 代理）
-    lark: {
-      enabled: !!(process.env.LARK_MCP_APP_ID && process.env.LARK_MCP_APP_SECRET),
-      type: 'stdio',
-      command: () => {
-        const appId = process.env.LARK_MCP_APP_ID!;
-        const appSecret = process.env.LARK_MCP_APP_SECRET!;
-        return ['npx', '-y', '@larksuiteoapi/lark-mcp', 'mcp', '-a', appId, '-s', appSecret];
-      },
-    },
-    
-    // 消息发送工具（通用，始终启用）
-    message: {
-      enabled: true,
-    },
-    
-    // 定时任务管理工具
-    cron: {
-      enabled: true,
-      dataDir: './data',
-      defaultLanguage: 'zh',
-      requireApproval: false,
-    },
-  },
-}, logger);
+import { loadConfigFromEnv } from './src/config';
+import { Gateway } from './src/gateway';
+import { MCPHTTPServer, CLI } from './src/callers';
+import { ToolRegistry, GitLabTool, ZentaoTool, WorkflowTool, FeishuTool, CronTool, MCPProxyTool } from './src/tools';
+import { FeishuClient } from './src/channels/feishu';
 
 // ============================================================
 // 启动
 // ============================================================
 
-app.start().catch((err) => {
+async function main() {
+  const config = loadConfigFromEnv();
+  logger.info('[Startup] Loading configuration...');
+
+  // 创建工具注册表
+  const toolRegistry = new ToolRegistry(logger);
+
+  // 注册飞书消息发送工具（始终启用）
+  toolRegistry.register(new FeishuTool(logger));
+
+  // 注册 Cron 定时任务工具（始终启用）
+  toolRegistry.register(new CronTool({
+    dataDir: config.dataDir,
+    defaultLanguage: 'zh',
+  }, logger));
+
+  // 注册 GitLab 工具
+  if (config.tools.gitlab?.enabled) {
+    toolRegistry.register(new GitLabTool(config.tools.gitlab, logger));
+  }
+
+  // 注册禅道工具
+  if (config.tools.zentao?.enabled) {
+    toolRegistry.register(new ZentaoTool(config.tools.zentao, logger));
+  }
+
+  // 注册 Workflow 工具（需要 GitLab + 禅道）
+  if (config.tools.workflow?.enabled && config.tools.gitlab && config.tools.zentao) {
+    toolRegistry.register(new WorkflowTool({
+      gitlab: config.tools.gitlab,
+      zentao: config.tools.zentao,
+    }, logger));
+  }
+
+  // 注册第三方 MCP Server 工具
+  if (config.mcpServers) {
+    for (const [name, serverConfig] of Object.entries(config.mcpServers)) {
+      if (serverConfig.enabled) {
+        const mcpTool = new MCPProxyTool({
+          name,
+          command: serverConfig.command,
+          description: serverConfig.description,
+          env: serverConfig.env,
+          cwd: serverConfig.cwd,
+        }, logger);
+
+        // MCPProxyTool 需要在 start 时启动子进程
+        toolRegistry.register(mcpTool);
+        logger.info(`[Startup] Registered MCP Server: ${name}`);
+      }
+    }
+  }
+
+  // 创建 Gateway
+  const gateway = new Gateway({
+    agent: config.agent,
+    dataDir: config.dataDir,
+  }, logger, toolRegistry);
+
+  // 初始化 Gateway
+  await gateway.init();
+
+  // 注册渠道
+  if (config.channels.feishu?.enabled) {
+    const feishu = new FeishuClient({
+      id: 'feishu',
+      appId: config.channels.feishu.appId,
+      appSecret: config.channels.feishu.appSecret,
+      connectionMode: config.channels.feishu.connectionMode,
+      domain: config.channels.feishu.domain,
+      webhookPort: config.channels.feishu.webhookPort,
+    }, logger);
+
+    await feishu.connect();
+    gateway.registerChannel(feishu);
+  }
+
+  // 根据模式启动
+  if (config.mode === 'cli') {
+    const cli = new CLI(toolRegistry, logger);
+    await cli.run(process.argv.slice(2));
+  } else {
+    const mcpServer = new MCPHTTPServer(toolRegistry, {
+      port: config.mcp?.port || 3100,
+      host: config.mcp?.host || 'localhost',
+    }, logger);
+
+    await mcpServer.start();
+
+    // 设置 MCP Server 的活跃上下文回调
+    // 这样工具可以发送消息到当前活跃的聊天
+
+    // 优雅关闭
+    process.on('SIGINT', async () => {
+      logger.info('[Shutdown] Received SIGINT');
+      await gateway.shutdown();
+      await mcpServer.stop();
+      process.exit(0);
+    });
+
+    process.on('SIGTERM', async () => {
+      logger.info('[Shutdown] Received SIGTERM');
+      await gateway.shutdown();
+      await mcpServer.stop();
+      process.exit(0);
+    });
+  }
+}
+
+main().catch((err) => {
   logger.error('[Startup] Failed:', err);
   process.exit(1);
 });
