@@ -107,36 +107,72 @@ export class OpenCodeAgent implements IAgent {
   }
 
   async replyQuestion(requestId: string, answer: unknown): Promise<void> {
-    const res = await fetch(
-      `${this.config.url}/question/${requestId}/reply`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ answers: answer }),
+    const timeout = this.config.timeout || 600000;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeout);
+
+    try {
+      this.logger.info(`[OpenCodeAgent] Replying to question ${requestId} with timeout ${timeout}ms`);
+
+      const res = await fetch(
+        `${this.config.url}/question/${requestId}/reply`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ answers: answer }),
+          signal: controller.signal,
+        }
+      );
+
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
       }
-    );
 
-    if (!res.ok) {
-      throw new Error(`HTTP ${res.status}`);
+      this.logger.info(`[OpenCodeAgent] Question ${requestId} replied successfully`);
+    } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') {
+        this.logger.warn(`[OpenCodeAgent] Question ${requestId} reply timed out after ${timeout}ms`);
+        throw new Error(`Question reply timed out after ${timeout}ms`);
+      }
+      this.logger.error(`[OpenCodeAgent] Question ${requestId} reply failed: ${(error as Error).message}`);
+      throw error;
+    } finally {
+      clearTimeout(timeoutId);
     }
-
-    this.logger.info(`[OpenCodeAgent] Question ${requestId} replied`);
   }
 
   async rejectQuestion(requestId: string): Promise<void> {
-    const res = await fetch(
-      `${this.config.url}/question/${requestId}/reject`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+    const timeout = this.config.timeout || 600000;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeout);
+
+    try {
+      this.logger.info(`[OpenCodeAgent] Rejecting question ${requestId} with timeout ${timeout}ms`);
+
+      const res = await fetch(
+        `${this.config.url}/question/${requestId}/reject`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          signal: controller.signal,
+        }
+      );
+
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
       }
-    );
 
-    if (!res.ok) {
-      throw new Error(`HTTP ${res.status}`);
+      this.logger.info(`[OpenCodeAgent] Question ${requestId} rejected successfully`);
+    } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') {
+        this.logger.warn(`[OpenCodeAgent] Question ${requestId} reject timed out after ${timeout}ms`);
+        throw new Error(`Question reject timed out after ${timeout}ms`);
+      }
+      this.logger.error(`[OpenCodeAgent] Question ${requestId} reject failed: ${(error as Error).message}`);
+      throw error;
+    } finally {
+      clearTimeout(timeoutId);
     }
-
-    this.logger.info(`[OpenCodeAgent] Question ${requestId} rejected`);
   }
 
   async shutdown(): Promise<void> {

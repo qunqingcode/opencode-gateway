@@ -153,6 +153,16 @@ registerChannel(channel: IChannel): void {
     const { action, value } = event;
     this.logger.info(`[Gateway] Interaction: ${action}`);
 
+    // ============================================================
+    // 特殊处理 OpenCode Agent 相关交互
+    // ============================================================
+    if (action.startsWith('opencode.')) {
+      return this.handleOpenCodeInteraction(action, value);
+    }
+
+    // ============================================================
+    // 处理工具交互
+    // ============================================================
     // 解析工具名和参数
     const [namespace, ...rest] = action.split('.');
     const toolName = rest.join('.');
@@ -174,6 +184,58 @@ registerChannel(channel: IChannel): void {
         : { type: 'error', content: result.error || '操作失败' },
       card: result.approvalCard,
     };
+  }
+
+  /**
+   * 处理 OpenCode Agent 相关交互 (permission/question)
+   */
+  private async handleOpenCodeInteraction(action: string, value: Record<string, unknown>): Promise<InteractionResult> {
+    const args = (value as Record<string, unknown>)?.args as Record<string, unknown> || value;
+
+    try {
+      // 处理权限回复
+      if (action === 'opencode.permission.reply') {
+        const { permissionId, sessionId, response } = args;
+        
+        if (!permissionId || !sessionId || !response) {
+          return { toast: { type: 'error', content: '缺少必要参数' } };
+        }
+
+        await this.agent.replyPermission(sessionId as string, permissionId as string, response as 'allow' | 'deny');
+        
+        this.logger.info(`[Gateway] Permission ${permissionId} ${response}ed via card`);
+        return { toast: { type: 'success', content: response === 'allow' ? '✅ 已允许' : '❌ 已拒绝' } };
+      }
+
+      // 处理问题回复
+      if (action === 'opencode.question.reply') {
+        const { requestId, answerJson } = args;
+        
+        if (!requestId || !answerJson) {
+          return { toast: { type: 'error', content: '缺少必要参数' } };
+        }
+
+        // 解析 answerJson
+        let answer: unknown;
+        try {
+          answer = JSON.parse(answerJson as string);
+        } catch {
+          return { toast: { type: 'error', content: '答案格式错误' } };
+        }
+
+        await this.agent.replyQuestion(requestId as string, answer);
+        
+        this.logger.info(`[Gateway] Question ${requestId} replied via card`);
+        return { toast: { type: 'success', content: '✅ 已回复' } };
+      }
+
+      // 未知的 opencode action
+      this.logger.warn(`[Gateway] Unknown opencode action: ${action}`);
+      return { toast: { type: 'error', content: `未知操作: ${action}` } };
+    } catch (error) {
+      this.logger.error(`[Gateway] OpenCode interaction error: ${(error as Error).message}`);
+      return { toast: { type: 'error', content: `操作失败: ${(error as Error).message}` } };
+    }
   }
 
   // ============================================================

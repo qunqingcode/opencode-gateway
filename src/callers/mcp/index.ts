@@ -134,9 +134,15 @@ export class MCPHTTPServer {
     }
 
     // 工具列表
-    if (req.url === '/tools') {
+    if (req.url === '/tools' || req.url === '/tools/list') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ tools: this.toolRegistry.listPublic() }));
+      return;
+    }
+
+    // 工具调用（REST 端点，供 CLI 使用）
+    if (req.url === '/tools/call' && req.method === 'POST') {
+      await this.handleToolCallREST(req, res);
       return;
     }
 
@@ -265,6 +271,51 @@ export class MCPHTTPServer {
       ],
       isError: !result.success,
     };
+  }
+
+  /**
+   * 处理工具调用（REST 端点，供 CLI 使用）
+   */
+  private async handleToolCallREST(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    const body = await this.readBody(req);
+
+    try {
+      const { tool, args } = JSON.parse(body) as {
+        tool: string;
+        args: Record<string, unknown>;
+      };
+
+      if (!tool) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: 'Missing tool name' }));
+        return;
+      }
+
+      this.logger.info(`[MCPServer] CLI call: ${tool}`);
+
+      // 构建上下文
+      const context: ToolContext = {
+        chatId: this.activeContext?.chatId || process.env.FEISHU_DEFAULT_CHAT_ID || '',
+        userId: this.activeContext?.userId || 'cli-user',
+        sessionId: this.activeContext?.sessionId || 'cli-session',
+        sendText: this.activeContext?.sendText || (async () => {}),
+        sendCard: this.activeContext?.sendCard || (async () => {}),
+        logger: this.logger,
+      };
+
+      // 执行工具
+      const result = await this.toolRegistry.execute(tool, args || {}, context);
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        success: result.success,
+        output: result.output,
+        error: result.error,
+      }));
+    } catch (error) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: false, error: (error as Error).message }));
+    }
   }
 
   /**

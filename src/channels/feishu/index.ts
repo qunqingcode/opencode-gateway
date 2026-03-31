@@ -263,12 +263,17 @@ export class FeishuChannel extends BaseChannel {
         ? async (event) => {
           // 飞书卡片事件转换为 InteractionEvent
           const value = event.action.value;
+          
+          // value 结构: { kind: 'button', action: 'opencode.question.reply', args: {...} }
+          // 实际 action 应该从 value.action 获取，而不是 value.kind
+          const action = (value.action as string) || (value.kind as string) || '';
+          
           const interactionEvent: InteractionEvent = {
             channelId: this.id,
             chatId: '', // 飞书卡片事件不包含 chatId，需要从上下文获取
             userId: event.open_id || '',
             messageId: event.open_message_id,
-            action: (value.kind as string) || '',
+            action,
             value,
           };
           return this.handleInteraction(interactionEvent);

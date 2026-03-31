@@ -28,33 +28,34 @@ export class CLI {
 
   /**
    * 运行 CLI
+   * @returns 退出码 (0=成功, 1=错误)
    */
-  async run(args: string[]): Promise<void> {
+  async run(args: string[]): Promise<number> {
     if (args.length === 0) {
       this.printHelp();
-      return;
+      return 0;
     }
 
     const [toolName, ...toolArgs] = args;
 
     if (toolName === 'list') {
       this.listTools();
-      return;
+      return 0;
     }
 
     if (toolName === 'help') {
       this.printHelp();
-      return;
+      return 0;
     }
 
     // 执行工具
-    await this.executeTool(toolName, this.parseArgs(toolArgs));
+    return this.executeTool(toolName, this.parseArgs(toolArgs));
   }
 
   /**
    * 执行工具
    */
-  private async executeTool(name: string, args: Record<string, unknown>): Promise<void> {
+  private async executeTool(name: string, args: Record<string, unknown>): Promise<number> {
     const context: ToolContext = {
       chatId: 'cli',
       userId: process.env.USER || 'cli-user',
@@ -64,13 +65,20 @@ export class CLI {
       logger: this.logger,
     };
 
-    const result = await this.toolRegistry.execute(name, args, context);
+    try {
+      const result = await this.toolRegistry.execute(name, args, context);
 
-    if (result.success) {
-      console.log('\n✅ Success:');
-      console.log(JSON.stringify(result.output, null, 2));
-    } else {
-      console.error('\n❌ Error:', result.error);
+      if (result.success) {
+        console.log('\n✅ Success:');
+        console.log(JSON.stringify(result.output, null, 2));
+        return 0;
+      } else {
+        console.error('\n❌ Error:', result.error);
+        return 1;
+      }
+    } catch (error) {
+      console.error('\n❌ Error:', (error as Error).message);
+      return 1;
     }
   }
 
@@ -117,6 +125,7 @@ OpenCode Gateway CLI
 
 示例:
   gateway gitlab --action get_branches
+  gateway zentao --action get_bug --bugId 123
   gateway workflow --action merge_and_close_bug --mrId 123 --bugId 456
 `);
   }

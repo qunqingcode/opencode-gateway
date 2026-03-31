@@ -3,6 +3,10 @@
  * 
  * 六层架构：
  * callers/ → gateway/ → agents/ + tools/ → channels/ + clients/
+ * 
+ * 启动模式：
+ * - npm start: 启动 MCP Server + Feishu Channel
+ * - gateway <cmd>: CLI 调用正在运行的 MCP Server
  */
 
 require('dotenv').config();
@@ -10,7 +14,7 @@ require('dotenv').config();
 import { appLogger as logger } from './src/utils/logger';
 import { loadConfigFromEnv } from './src/config';
 import { Gateway } from './src/gateway';
-import { MCPHTTPServer, CLI } from './src/callers';
+import { MCPHTTPServer } from './src/callers';
 import { ToolRegistry, GitLabTool, ZentaoTool, WorkflowTool, FeishuTool, CronTool, MCPProxyTool } from './src/tools';
 import { FeishuClient } from './src/channels/feishu';
 
@@ -64,7 +68,6 @@ async function main() {
           cwd: serverConfig.cwd,
         }, logger);
 
-        // MCPProxyTool 需要在 start 时启动子进程
         toolRegistry.register(mcpTool);
         logger.info(`[Startup] Registered MCP Server: ${name}`);
       }
@@ -80,7 +83,7 @@ async function main() {
   // 初始化 Gateway
   await gateway.init();
 
-  // 注册渠道
+  // 注册飞书渠道
   if (config.channels.feishu?.enabled) {
     const feishu = new FeishuClient({
       id: 'feishu',
@@ -95,36 +98,24 @@ async function main() {
     gateway.registerChannel(feishu);
   }
 
-  // 根据模式启动
-  if (config.mode === 'cli') {
-    const cli = new CLI(toolRegistry, logger);
-    await cli.run(process.argv.slice(2));
-  } else {
-    const mcpServer = new MCPHTTPServer(toolRegistry, {
-      port: config.mcp?.port || 3100,
-      host: config.mcp?.host || 'localhost',
-    }, logger);
+  // 启动 MCP HTTP Server
+  const mcpServer = new MCPHTTPServer(toolRegistry, {
+    port: config.mcp?.port || 3100,
+    host: config.mcp?.host || 'localhost',
+  }, logger);
 
-    await mcpServer.start();
+  await mcpServer.start();
 
-    // 设置 MCP Server 的活跃上下文回调
-    // 这样工具可以发送消息到当前活跃的聊天
+  // 优雅关闭
+  const shutdown = async () => {
+    logger.info('[Shutdown] Graceful shutdown...');
+    await gateway.shutdown();
+    await mcpServer.stop();
+    process.exit(0);
+  };
 
-    // 优雅关闭
-    process.on('SIGINT', async () => {
-      logger.info('[Shutdown] Received SIGINT');
-      await gateway.shutdown();
-      await mcpServer.stop();
-      process.exit(0);
-    });
-
-    process.on('SIGTERM', async () => {
-      logger.info('[Shutdown] Received SIGTERM');
-      await gateway.shutdown();
-      await mcpServer.stop();
-      process.exit(0);
-    });
-  }
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
 }
 
 main().catch((err) => {
