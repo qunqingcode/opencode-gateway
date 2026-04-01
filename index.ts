@@ -30,7 +30,7 @@ async function main() {
   const toolRegistry = new ToolRegistry(logger);
 
   // 创建并注册所有工具
-  const tools = await createAllTools({
+  const { tools, cronStore } = await createAllTools({
     dataDir: config.dataDir,
     ...config.tools,
     mcpServers: config.mcpServers,
@@ -43,11 +43,11 @@ async function main() {
   const internalTools = tools.length - publicTools.length;
   logger.info(`[Startup] Registered ${publicTools.length} public tools, ${internalTools} internal tools`);
 
-  // 创建 Gateway
+  // 创建 Gateway（传入 cronStore，Gateway 会自动创建和启动 scheduler）
   const gateway = new Gateway({
     agent: config.agent,
     dataDir: config.dataDir,
-  }, logger, toolRegistry);
+  }, logger, toolRegistry, cronStore);
 
   // 初始化 Gateway
   await gateway.init();
