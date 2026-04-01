@@ -10,7 +10,7 @@ import { createGitLabTools } from './gitlab';
 import { createZentaoTools } from './zentao';
 import { createWorkflowTools } from './workflow';
 import { createFeishuTools } from './feishu';
-import { createCronTools } from './cron';
+import { createCronTools, CronStore } from './cron';
 import { createMCPProxyTools, MCPProxyTool } from './mcp-proxy';
 
 // 类型
@@ -22,6 +22,10 @@ export type {
   JSONSchema,
   ToolBuilderOptions,
 } from './types';
+
+// Cron 相关导出
+export { CronStore } from './cron';
+export type { CronJob } from './cron';
 
 // 基类
 export { BaseTool } from './base';
@@ -72,6 +76,19 @@ export interface ToolsConfig {
 }
 
 // ============================================================
+// 创建工具结果
+// ============================================================
+
+/**
+ * 创建所有工具的结果
+ */
+export interface CreateAllToolsResult {
+  tools: ITool[];
+  /** Cron Store（供 Gateway 创建 scheduler） */
+  cronStore?: CronStore;
+}
+
+// ============================================================
 // 统一工具工厂
 // ============================================================
 
@@ -80,17 +97,24 @@ export interface ToolsConfig {
  * 
  * 根据配置自动创建所有启用的工具
  */
-export async function createAllTools(config: ToolsConfig, logger: Logger): Promise<ITool[]> {
+export async function createAllTools(
+  config: ToolsConfig,
+  logger: Logger
+): Promise<CreateAllToolsResult> {
   const tools: ITool[] = [];
+  let cronStore: CronStore | undefined;
 
   // 1. 飞书工具（始终启用）
   tools.push(...createFeishuTools(logger));
 
   // 2. Cron 工具（始终启用）
-  tools.push(...createCronTools({
+  const cronResult = createCronTools({
     dataDir: config.dataDir,
     defaultLanguage: 'zh',
-  }, logger));
+  }, logger);
+  
+  tools.push(...cronResult.tools);
+  cronStore = cronResult.store;
 
   // 3. GitLab 工具
   if (config.gitlab?.enabled) {
@@ -127,5 +151,5 @@ export async function createAllTools(config: ToolsConfig, logger: Logger): Promi
     }
   }
 
-  return tools;
+  return { tools, cronStore };
 }

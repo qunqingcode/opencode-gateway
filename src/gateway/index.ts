@@ -8,6 +8,7 @@ import type { Logger } from '../types';
 import type { IAgent, AgentEvent } from '../agents';
 import { AgentFactory } from '../agents';
 import type { ToolRegistry, ToolContext, ITool } from '../tools';
+import type { CronStore } from '../tools/cron';
 import type { IChannel } from '../channels';
 import {
   FeishuCardBuilder,
@@ -21,6 +22,7 @@ import type {
   InteractionResult,
 } from './types';
 import { SessionManager } from './session';
+import { CronScheduler } from './cron-scheduler';
 
 // ============================================================
 // Gateway 实现
@@ -33,6 +35,7 @@ export class Gateway {
   private toolRegistry: ToolRegistry;
   private sessionManager: SessionManager;
   private channels = new Map<string, IChannel>();
+  private cronScheduler?: CronScheduler;
   private activeContext: {
     chatId: string;
     userId: string;
@@ -43,13 +46,23 @@ export class Gateway {
   constructor(
     config: GatewayConfig,
     logger: Logger,
-    toolRegistry: ToolRegistry
+    toolRegistry: ToolRegistry,
+    cronStore?: CronStore
   ) {
     this.config = config;
     this.logger = logger;
     this.toolRegistry = toolRegistry;
     this.sessionManager = new SessionManager(config.dataDir || './data', logger);
     this.agent = AgentFactory.create('opencode', config.agent, logger);
+
+    // 如果提供了 cronStore，立即创建 scheduler（init 时启动）
+    if (cronStore) {
+      this.cronScheduler = new CronScheduler(
+        cronStore,
+        this.executeCronJob.bind(this),
+        this.logger
+      );
+    }
   }
 
   // ============================================================
@@ -66,6 +79,9 @@ export class Gateway {
     // 启动工具
     await this.toolRegistry.startAll();
 
+    // 启动 Cron 调度器
+    this.cronScheduler?.start();
+
     this.logger.info('[Gateway] Initialized');
   }
 
@@ -76,10 +92,10 @@ export class Gateway {
   /**
    * 注册渠道
    */
-registerChannel(channel: IChannel): void {
+  registerChannel(channel: IChannel): void {
     this.channels.set(channel.id, channel);
 
-    // 注册消息处理器（Channel 已传递标准化消息）
+    // 注册消息处理器
     channel.onMessage(async (message: StandardMessage) => {
       await this.processMessage(message);
     });
@@ -153,25 +169,17 @@ registerChannel(channel: IChannel): void {
     const { action, value } = event;
     this.logger.info(`[Gateway] Interaction: ${action}`);
 
-    // ============================================================
-    // 特殊处理 OpenCode Agent 相关交互
-    // ============================================================
+    // 处理 OpenCode Agent 相关交互
     if (action.startsWith('opencode.')) {
       return this.handleOpenCodeInteraction(action, value);
     }
 
-    // ============================================================
     // 处理工具交互
-    // ============================================================
-    // 新架构：工具名称格式为 gitlab.create_mr_confirm
-    // action 就是完整的工具名称
     const toolName = action;
     const toolArgs = ((value as Record<string, unknown>)?.args as Record<string, unknown>) || value;
 
-    // 构建工具上下文
     const context = this.createToolContext(event);
 
-    // 执行工具
     const result = await this.toolRegistry.execute(toolName, toolArgs, context);
 
     return {
@@ -183,7 +191,7 @@ registerChannel(channel: IChannel): void {
   }
 
   /**
-   * 处理 OpenCode Agent 相关交互 (permission/question)
+   * 处理 OpenCode Agent 相关交互
    */
   private async handleOpenCodeInteraction(action: string, value: Record<string, unknown>): Promise<InteractionResult> {
     const args = (value as Record<string, unknown>)?.args as Record<string, unknown> || value;
@@ -192,13 +200,13 @@ registerChannel(channel: IChannel): void {
       // 处理权限回复
       if (action === 'opencode.permission.reply') {
         const { permissionId, sessionId, response } = args;
-        
+
         if (!permissionId || !sessionId || !response) {
           return { toast: { type: 'error', content: '缺少必要参数' } };
         }
 
         await this.agent.replyPermission(sessionId as string, permissionId as string, response as 'allow' | 'deny');
-        
+
         this.logger.info(`[Gateway] Permission ${permissionId} ${response}ed via card`);
         return { toast: { type: 'success', content: response === 'allow' ? '✅ 已允许' : '❌ 已拒绝' } };
       }
@@ -206,12 +214,11 @@ registerChannel(channel: IChannel): void {
       // 处理问题回复
       if (action === 'opencode.question.reply') {
         const { requestId, answerJson } = args;
-        
+
         if (!requestId || !answerJson) {
           return { toast: { type: 'error', content: '缺少必要参数' } };
         }
 
-        // 解析 answerJson
         let answer: unknown;
         try {
           answer = JSON.parse(answerJson as string);
@@ -220,12 +227,11 @@ registerChannel(channel: IChannel): void {
         }
 
         await this.agent.replyQuestion(requestId as string, answer);
-        
+
         this.logger.info(`[Gateway] Question ${requestId} replied via card`);
         return { toast: { type: 'success', content: '✅ 已回复' } };
       }
 
-      // 未知的 opencode action
       this.logger.warn(`[Gateway] Unknown opencode action: ${action}`);
       return { toast: { type: 'error', content: `未知操作: ${action}` } };
     } catch (error) {
@@ -239,34 +245,50 @@ registerChannel(channel: IChannel): void {
   // ============================================================
 
   private async handleAgentEvent(event: AgentEvent): Promise<void> {
-    if (!this.activeContext) return;
+    if (!this.activeContext) {
+      this.logger.warn('[Gateway] Agent event received but no active context');
+      return;
+    }
 
     const channel = this.channels.get(this.activeContext.channelId);
-    if (!channel) return;
+    if (!channel) {
+      this.logger.warn(`[Gateway] Channel not found: ${this.activeContext.channelId}`);
+      return;
+    }
 
-    switch (event.type) {
-      case 'permission': {
-        await this.sendPermissionCard(channel, event.data);
-        break;
-      }
-      case 'question': {
-        await this.sendQuestionCard(channel, event.data);
-        break;
-      }
-      case 'tool_status': {
-        const statusMap: Record<string, string> = {
-          running: `🔄 执行工具: ${event.data.name}`,
-          completed: `✅ 完成: ${event.data.name}`,
-          error: `❌ 失败: ${event.data.name}`,
-        };
-        await channel.sendText(this.activeContext.chatId, statusMap[event.data.status] || '');
-        break;
-      }
-      case 'text_chunk': {
-        if (event.data.isFinal) {
-          await channel.sendText(this.activeContext.chatId, event.data.text);
+    try {
+      switch (event.type) {
+        case 'permission': {
+          await this.sendPermissionCard(channel, event.data);
+          break;
         }
-        break;
+        case 'question': {
+          await this.sendQuestionCard(channel, event.data);
+          break;
+        }
+        case 'tool_status': {
+          const statusMap: Record<string, string> = {
+            running: `🔄 执行工具: ${event.data.name}`,
+            completed: `✅ 完成: ${event.data.name}`,
+            error: `❌ 失败: ${event.data.name}`,
+          };
+          await channel.sendText(this.activeContext.chatId, statusMap[event.data.status] || '');
+          break;
+        }
+        case 'text_chunk': {
+          if (event.data.isFinal) {
+            await channel.sendText(this.activeContext.chatId, event.data.text);
+          }
+          break;
+        }
+      }
+    } catch (error) {
+      this.logger.error(`[Gateway] Failed to handle agent event (${event.type}): ${(error as Error).message}`);
+      // 发送错误提示给用户
+      try {
+        await channel.sendText(this.activeContext.chatId, `❌ 处理事件失败: ${(error as Error).message}`);
+      } catch {
+        // 忽略发送错误
       }
     }
   }
@@ -308,10 +330,28 @@ registerChannel(channel: IChannel): void {
       options?: Array<{ label: string; description?: string }>;
     }>;
   }): Promise<void> {
+    // 防御性检查：确保有有效的问题
+    if (!question.questions || question.questions.length === 0) {
+      this.logger.error('[Gateway] Question event has no questions');
+      await channel.sendText(this.activeContext!.chatId, '❌ 收到空的问题请求');
+      return;
+    }
+
     const firstQuestion = question.questions[0];
+
+    // 检查是否有选项
+    if (!firstQuestion.options || firstQuestion.options.length === 0) {
+      this.logger.error('[Gateway] Question has no options');
+      await channel.sendText(
+        this.activeContext!.chatId,
+        `❓ **${firstQuestion.header || '问题'}**\n${firstQuestion.question}\n\n_此问题没有提供选项_`
+      );
+      return;
+    }
+
     const actionBuilder = new ActionBuilder();
 
-    for (const option of firstQuestion.options || []) {
+    for (const option of firstQuestion.options) {
       actionBuilder.addButton(option.label, 'default', createFeishuCardInteractionEnvelope({
         kind: 'button',
         action: 'opencode.question.reply',
@@ -330,6 +370,53 @@ registerChannel(channel: IChannel): void {
       .build();
 
     await channel.sendCard(this.activeContext!.chatId, card);
+  }
+
+  // ============================================================
+  // Cron 任务执行
+  // ============================================================
+
+  /**
+   * 执行 Cron 任务
+   * 
+   * 由 CronScheduler 调用
+   */
+  private async executeCronJob(job: { id: string; chatId: string; prompt: string }): Promise<void> {
+    this.logger.info(`[Gateway] Executing cron job: ${job.id} for chat ${job.chatId}`);
+
+    try {
+      // 获取或创建 Session
+      const session = this.sessionManager.getOrCreate(job.chatId);
+      const agentSessionId = session.agentSessionId || await this.agent.createSession();
+
+      // 关联 Agent Session
+      if (!session.agentSessionId) {
+        session.agentSessionId = agentSessionId;
+        this.sessionManager.save();
+      }
+
+      // 设置活跃上下文（用于发送响应）
+      this.activeContext = {
+        chatId: job.chatId,
+        userId: 'cron-system',
+        sessionId: agentSessionId,
+        channelId: 'feishu',
+      };
+
+      // 调用 Agent
+      const response = await this.agent.sendPrompt(agentSessionId, job.prompt);
+
+      // 发送响应到飞书
+      if (response) {
+        const channel = this.channels.get('feishu');
+        if (channel) {
+          await channel.sendText(job.chatId, `⏰ [定时任务] ${response}`);
+        }
+      }
+    } catch (error) {
+      this.logger.error(`[Gateway] Cron job execution failed: ${(error as Error).message}`);
+      throw error; // 让 scheduler 记录错误
+    }
   }
 
   // ============================================================
@@ -371,6 +458,11 @@ registerChannel(channel: IChannel): void {
   // ============================================================
 
   async shutdown(): Promise<void> {
+    // 停止 Cron 调度器
+    if (this.cronScheduler) {
+      this.cronScheduler.stop();
+    }
+
     await this.toolRegistry.stopAll();
     await this.agent.shutdown();
 

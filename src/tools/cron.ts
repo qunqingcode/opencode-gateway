@@ -1,12 +1,11 @@
 /**
  * Cron 定时任务工具集
  * 
- * 每个操作独立成一个工具，符合 MCP 标准风格
+ * 工具层只负责：
+ * 1. 任务 CRUD（创建、删除、启用、禁用、查询）
+ * 2. 任务持久化（CronStore）
  * 
- * 功能：
- * 1. 定时任务定义和持久化
- * 2. Cron 表达式解析和调度
- * 3. 任务执行和超时控制
+ * 调度逻辑由 Gateway 层的 CronScheduler 负责
  */
 
 import * as fs from 'fs';
@@ -34,23 +33,28 @@ export interface CronJob {
   lastError?: string;
 }
 
-/** 语言类型 */
-export type CronLanguage = 'en' | 'zh';
+/** 语言类型（内部使用） */
+type CronLanguage = 'en' | 'zh';
 
 // ============================================================
 // 配置
 // ============================================================
 
-export interface CronToolConfig {
+interface CronToolConfig {
   dataDir: string;
   defaultLanguage?: CronLanguage;
 }
 
 // ============================================================
-// 共享存储
+// CronStore - 任务持久化存储
 // ============================================================
 
-class CronStore {
+/**
+ * Cron 任务存储
+ * 
+ * 提供任务的 CRUD 操作，持久化到 JSON 文件
+ */
+export class CronStore {
   private jobs = new Map<string, CronJob>();
   private storePath: string;
   private logger: Logger;
@@ -69,6 +73,14 @@ class CronStore {
     return Array.from(this.jobs.values()).filter((j) => j.chatId === chatId);
   }
 
+  getAllEnabled(): CronJob[] {
+    return Array.from(this.jobs.values()).filter((j) => j.enabled);
+  }
+
+  getAll(): CronJob[] {
+    return Array.from(this.jobs.values());
+  }
+
   set(job: CronJob): void {
     this.jobs.set(job.id, job);
     this.save();
@@ -80,12 +92,12 @@ class CronStore {
     return result;
   }
 
-  update(id: string, updates: Partial<CronJob>): boolean {
+  update(id: string, updates: Partial<CronJob>): CronJob | undefined {
     const job = this.jobs.get(id);
-    if (!job) return false;
+    if (!job) return undefined;
     Object.assign(job, updates);
     this.save();
-    return true;
+    return job;
   }
 
   private load(): void {
@@ -99,7 +111,7 @@ class CronStore {
         this.jobs.set(job.id, job);
       }
 
-      this.logger.info(`[CronStore] Loaded ${this.jobs.size} jobs`);
+      this.logger.info(`[CronStore] Loaded ${this.jobs.size} jobs from ${this.storePath}`);
     } catch (err) {
       this.logger.error(`[CronStore] Failed to load: ${(err as Error).message}`);
     }
@@ -345,6 +357,7 @@ class RunJobTool extends BaseTool {
     return this.success({
       message: '任务已触发',
       prompt: job.prompt,
+      chatId: job.chatId,
     });
   }
 }
@@ -354,16 +367,23 @@ class RunJobTool extends BaseTool {
 // ============================================================
 
 /**
- * Cron 工具集
+ * 创建 Cron 工具集
  * 
- * 创建所有定时任务相关的独立工具
+ * 返回 CRUD 工具和 CronStore 实例
+ * 
+ * @param config 配置
+ * @param logger 日志
+ * @returns 工具列表和 CronStore
  */
-export function createCronTools(config: CronToolConfig, logger: Logger): ITool[] {
+export function createCronTools(
+  config: CronToolConfig,
+  logger: Logger
+): { tools: ITool[]; store: CronStore } {
   const storePath = path.join(config.dataDir, 'cron-jobs.json');
   const store = new CronStore(storePath, logger);
   const defaultLanguage = config.defaultLanguage || 'zh';
 
-  return [
+  const tools: ITool[] = [
     new ListJobsTool(store, logger),
     new CreateJobTool(store, defaultLanguage, logger),
     new DeleteJobTool(store, logger),
@@ -371,20 +391,21 @@ export function createCronTools(config: CronToolConfig, logger: Logger): ITool[]
     new DisableJobTool(store, logger),
     new RunJobTool(store, logger),
   ];
+
+  return { tools, store };
 }
 
-
 // ============================================================
-// 辅助函数
+// 辅助函数（内部使用）
 // ============================================================
 
 /** 生成 Cron ID */
-export function generateCronId(): string {
+function generateCronId(): string {
   return crypto.randomBytes(8).toString('hex');
 }
 
 /** Cron 表达式转人类可读 */
-export function cronExprToHuman(expr: string, lang: CronLanguage = 'zh'): string {
+function cronExprToHuman(expr: string, lang: CronLanguage = 'zh'): string {
   const parts = expr.trim().split(/\s+/);
   if (parts.length < 5) return expr;
 
@@ -408,10 +429,4 @@ export function cronExprToHuman(expr: string, lang: CronLanguage = 'zh'): string
   }
 
   return expr;
-}
-
-/** 验证 Cron 表达式 */
-export function validateCronExpr(expr: string): boolean {
-  const parts = expr.trim().split(/\s+/);
-  return parts.length >= 5 && parts.length <= 6;
 }
