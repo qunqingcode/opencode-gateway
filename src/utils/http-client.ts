@@ -28,7 +28,7 @@ export interface HttpClientConfig {
   tokenLocation?: 'header' | 'query' | 'private-token';
   /** Token Header 名称 */
   tokenHeader?: string;
-  /** 是否允许自签名证书 */
+  /** 是否允许自签名证书（仅开发环境，生产环境禁用） */
   allowSelfSignedCert?: boolean;
   /** 默认请求头 */
   defaultHeaders?: Record<string, string>;
@@ -70,6 +70,11 @@ export class HttpClient {
       defaultHeaders: {},
       ...config,
     };
+
+    // 安全警告：自签名证书仅应在开发环境使用
+    if (this.config.allowSelfSignedCert && process.env.NODE_ENV === 'production') {
+      console.warn('[HttpClient] WARNING: allowSelfSignedCert is enabled in production environment. This may expose you to man-in-the-middle attacks.');
+    }
   }
 
   /**

@@ -13,6 +13,53 @@ import type {
 } from '../interface';
 
 // ============================================================
+// 工具常量
+// ============================================================
+
+/** 默认请求超时时间（毫秒） */
+const DEFAULT_REQUEST_TIMEOUT = 600000;
+
+/** SSE 读取超时时间（毫秒） */
+const SSE_READ_TIMEOUT = 5000;
+
+// ============================================================
+// 内部工具函数
+// ============================================================
+
+/**
+ * 带超时的 fetch 请求
+ */
+async function fetchWithTimeout(
+  url: string,
+  options: RequestInit,
+  timeout: number = DEFAULT_REQUEST_TIMEOUT
+): Promise<Response> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeout);
+
+  try {
+    const response = await fetch(url, {
+      ...options,
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    return response;
+  } catch (error) {
+    clearTimeout(timeoutId);
+
+    if (error instanceof Error && error.name === 'AbortError') {
+      throw new Error(`Request timed out after ${timeout}ms`);
+    }
+    throw error;
+  }
+}
+
+// ============================================================
 // OpenCode Agent
 // ============================================================
 
@@ -73,7 +120,7 @@ export class OpenCodeAgent implements IAgent {
       throw new Error('Agent not initialized');
     }
 
-    const timeout = this.config.timeout || 600000;
+    const timeout = this.config.timeout || DEFAULT_REQUEST_TIMEOUT;
     const progressConfig = this.config.progress || {};
 
     this.logger.info(`[OpenCodeAgent] Sending prompt to session ${sessionId}`);
@@ -107,71 +154,47 @@ export class OpenCodeAgent implements IAgent {
   }
 
   async replyQuestion(requestId: string, answer: unknown): Promise<void> {
-    const timeout = this.config.timeout || 600000;
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), timeout);
+    const timeout = this.config.timeout || DEFAULT_REQUEST_TIMEOUT;
+
+    this.logger.info(`[OpenCodeAgent] Replying to question ${requestId} with timeout ${timeout}ms`);
 
     try {
-      this.logger.info(`[OpenCodeAgent] Replying to question ${requestId} with timeout ${timeout}ms`);
-
-      const res = await fetch(
+      await fetchWithTimeout(
         `${this.config.url}/question/${requestId}/reply`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ answers: answer }),
-          signal: controller.signal,
-        }
+        },
+        timeout
       );
-
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status}`);
-      }
 
       this.logger.info(`[OpenCodeAgent] Question ${requestId} replied successfully`);
     } catch (error) {
-      if (error instanceof Error && error.name === 'AbortError') {
-        this.logger.warn(`[OpenCodeAgent] Question ${requestId} reply timed out after ${timeout}ms`);
-        throw new Error(`Question reply timed out after ${timeout}ms`);
-      }
       this.logger.error(`[OpenCodeAgent] Question ${requestId} reply failed: ${(error as Error).message}`);
       throw error;
-    } finally {
-      clearTimeout(timeoutId);
     }
   }
 
   async rejectQuestion(requestId: string): Promise<void> {
-    const timeout = this.config.timeout || 600000;
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), timeout);
+    const timeout = this.config.timeout || DEFAULT_REQUEST_TIMEOUT;
+
+    this.logger.info(`[OpenCodeAgent] Rejecting question ${requestId} with timeout ${timeout}ms`);
 
     try {
-      this.logger.info(`[OpenCodeAgent] Rejecting question ${requestId} with timeout ${timeout}ms`);
-
-      const res = await fetch(
+      await fetchWithTimeout(
         `${this.config.url}/question/${requestId}/reject`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          signal: controller.signal,
-        }
+        },
+        timeout
       );
-
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status}`);
-      }
 
       this.logger.info(`[OpenCodeAgent] Question ${requestId} rejected successfully`);
     } catch (error) {
-      if (error instanceof Error && error.name === 'AbortError') {
-        this.logger.warn(`[OpenCodeAgent] Question ${requestId} reject timed out after ${timeout}ms`);
-        throw new Error(`Question reject timed out after ${timeout}ms`);
-      }
       this.logger.error(`[OpenCodeAgent] Question ${requestId} reject failed: ${(error as Error).message}`);
       throw error;
-    } finally {
-      clearTimeout(timeoutId);
     }
   }
 
@@ -245,8 +268,11 @@ export class OpenCodeAgent implements IAgent {
       const props = (event as { properties?: Record<string, unknown> }).properties || {};
 
       // 过滤非当前 session 的事件
+      // message.part.updated: sessionID 在 part 中
+      // session.idle/session.error: sessionID 在 properties 中
+      const partSessionId = (props.part as { sessionID?: string })?.sessionID;
       const eventSessionId =
-        props.sessionID || (props.info as { sessionID?: string })?.sessionID;
+        props.sessionID || (props.info as { sessionID?: string })?.sessionID || partSessionId;
       if (eventSessionId && eventSessionId !== sessionId) continue;
 
       switch (eventType) {
@@ -286,8 +312,16 @@ export class OpenCodeAgent implements IAgent {
           break;
 
         case 'session.error': {
-          const error = props.error as { message?: string } | undefined;
-          throw new Error(error?.message || 'Session error');
+          const error = props.error as { message?: string; name?: string } | undefined;
+          const errorSessionId = props.sessionID as string | undefined;
+          // 只有当错误属于当前 session 或是全局错误（无 sessionID）时才抛出
+          if (!errorSessionId || errorSessionId === sessionId) {
+            const errorMsg = error?.message || (error?.name || 'Session error');
+            this.logger.error(`[OpenCodeAgent] Session error: ${errorMsg}`);
+            throw new Error(errorMsg);
+          }
+          // 其他 session 的错误，忽略并继续监听
+          break;
         }
 
         case 'permission.updated':

@@ -107,6 +107,35 @@ export class GitLabClient extends BaseClient {
   }
 
   async pushBranch(name: string): Promise<boolean> {
+    // 验证分支名以防止命令注入
+    if (!name || name.length === 0 || name.length > 255) {
+      const error = new Error(`Invalid branch name: ${name}`);
+      this.logger.error(`[GitLab] Invalid branch name: ${name}`);
+      throw error;
+    }
+
+    // 不能以 . 开头或结尾
+    if (name.startsWith('.') || name.endsWith('.')) {
+      const error = new Error(`Invalid branch name: ${name}`);
+      this.logger.error(`[GitLab] Invalid branch name: ${name}`);
+      throw error;
+    }
+
+    // 不能包含连续的 ..
+    if (name.includes('..')) {
+      const error = new Error(`Invalid branch name: ${name}`);
+      this.logger.error(`[GitLab] Invalid branch name: ${name}`);
+      throw error;
+    }
+
+    // 验证分支名只包含安全字符
+    const branchNamePattern = /^[a-zA-Z0-9_\-/.]+$/;
+    if (!branchNamePattern.test(name)) {
+      const error = new Error(`Invalid branch name: ${name}`);
+      this.logger.error(`[GitLab] Invalid branch name: ${name}`);
+      throw error;
+    }
+
     try {
       await execAsync(`git push origin ${name}`);
       this.logger.info(`[GitLab] Pushed branch: ${name}`);

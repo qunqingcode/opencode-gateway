@@ -32,24 +32,6 @@ export { createTool } from './types';
 // 注册表
 export { ToolRegistry } from './registry';
 
-// 单独工具工厂（按需使用）
-export { createGitLabTools, type GitLabToolConfig } from './gitlab';
-export { createZentaoTools, type ZentaoToolConfig } from './zentao';
-export { createWorkflowTools, type WorkflowToolConfig } from './workflow';
-export { createFeishuTools } from './feishu';
-export {
-  createCronTools,
-  type CronToolConfig,
-  type CronJob,
-  type CronLanguage,
-  generateCronId,
-  cronExprToHuman,
-  validateCronExpr,
-} from './cron';
-
-// MCP Proxy 工具
-export { createMCPProxyTools, MCPProxyTool, type MCPProxyToolConfig } from './mcp-proxy';
-
 // ============================================================
 // 配置类型
 // ============================================================

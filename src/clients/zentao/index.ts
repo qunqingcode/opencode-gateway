@@ -43,11 +43,12 @@ interface ZentaoIssue {
 
 export class ZentaoClient extends BaseClient {
   readonly name = 'Zentao';
-  
+
   private client: HttpClient;
   private token: string | null = null;
   private projectId?: string | number;
   private account?: string;
+  // 敏感信息：使用后应清除
   private password?: string;
 
   constructor(config: ZentaoClientConfig, logger: Logger) {
@@ -55,7 +56,7 @@ export class ZentaoClient extends BaseClient {
     this.projectId = config.projectId;
     this.account = config.account;
     this.password = config.password;
-    
+
     this.client = createHttpClient({
       baseUrl: config.baseUrl,
       timeout: 30000,
@@ -65,6 +66,8 @@ export class ZentaoClient extends BaseClient {
     if (config.token) {
       this.token = config.token;
       this.client.setToken(config.token);
+      // 使用 token 时清除密码
+      this.password = undefined;
     }
   }
 
@@ -170,6 +173,9 @@ export class ZentaoClient extends BaseClient {
       this.token = result.token;
       this.client.setToken(result.token);
       this.logger.info(`[Zentao] Login successful`);
+
+      // 登录成功后立即清除敏感密码
+      this.password = undefined;
     } catch (error) {
       this.logger.error(`[Zentao] Login failed: ${(error as Error).message}`);
       throw error;

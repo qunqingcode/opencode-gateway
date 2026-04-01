@@ -1,6 +1,6 @@
 /**
  * GitLab 工具集
- * 
+ *
  * 每个操作独立成一个工具，符合 MCP 标准风格
  */
 
@@ -15,6 +15,7 @@ import {
   buildFeishuCardInteractionContext,
   FEISHU_CARD_DEFAULT_TTL_MS,
 } from '../channels/feishu';
+import { InputValidator } from '../utils/validation';
 
 // ============================================================
 // 配置
@@ -57,6 +58,7 @@ class GetBranchesTool extends BaseTool {
     let filtered = branches;
     if (args.search) {
       const search = args.search as string;
+      InputValidator.validateTextLength(search, 'search', 0, 100);
       filtered = branches.filter((b) => b.name.includes(search));
     }
 
@@ -123,7 +125,24 @@ class CreateMRTool extends BaseTool {
   }
 
   async execute(args: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
-    let content = `**源分支**: \`${args.sourceBranch}\`\n**目标分支**: \`${args.targetBranch}\`\n**标题**: ${args.title}`;
+    // 验证输入
+    const sourceBranch = args.sourceBranch as string;
+    const targetBranch = args.targetBranch as string;
+    const title = args.title as string;
+
+    InputValidator.validateBranchName(sourceBranch, 'sourceBranch');
+    InputValidator.validateBranchName(targetBranch, 'targetBranch');
+    InputValidator.validateTextLength(title, 'title', 1, 500);
+
+    if (args.description) {
+      InputValidator.validateTextLength(args.description as string, 'description', 0, 10000);
+    }
+
+    if (args.changelogUrl) {
+      InputValidator.validateUrl(args.changelogUrl as string, 'changelogUrl');
+    }
+
+    let content = `**源分支**: \`${sourceBranch}\`\n**目标分支**: \`${targetBranch}\`\n**标题**: ${title}`;
     if (args.changelogUrl) {
       content += `\n\n📄 **变更日志**: [查看](${args.changelogUrl})`;
     }
@@ -255,10 +274,12 @@ class CreateBranchTool extends BaseTool {
   }
 
   async execute(args: Record<string, unknown>): Promise<ToolResult> {
-    const branch = await this.client.createBranch(
-      args.name as string,
-      args.ref as string | undefined
-    );
+    const name = args.name as string;
+    const ref = args.ref as string | undefined;
+
+    InputValidator.validateBranchName(name, 'name');
+
+    const branch = await this.client.createBranch(name, ref);
     return this.success({ message: `分支 ${branch.name} 创建成功` });
   }
 }

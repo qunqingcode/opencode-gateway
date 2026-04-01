@@ -29,6 +29,8 @@
     "node_modules",
     "dist",
     "**/*.js",
-    "src/legacy/**"
+    "src/legacy/**",
+    "**/*.test.ts",
+    "**/*.spec.ts"
   ]
 }

@@ -1,6 +1,6 @@
 /**
  * 飞书卡片模块
- * 
+ *
  * 提供飞书原生格式卡片构建能力
  */
 
@@ -19,6 +19,18 @@ export {
   type CardElement,
   type CardAction,
 } from "./card-builder.js";
+
+// ============================================================
+// 审批卡片构建器
+// ============================================================
+
+export {
+  createApprovalCard,
+  createSuccessCard,
+  createErrorCard,
+  createResultCard,
+  type ApprovalCardOptions,
+} from "./approval-builder.js";
 
 // ============================================================
 // 交互协议
