@@ -104,15 +104,20 @@ export class OpenCodeAgent implements IAgent {
       };
     }
 
-    const result = await this.client.session.create({ body });
-    const sessionId = result?.data?.id;
+    try {
+      const result = await this.client.session.create({ body });
+      const sessionId = result?.data?.id;
 
-    if (!sessionId) {
-      throw new Error('Failed to create session');
+      if (!sessionId) {
+        throw new Error('Failed to create session');
+      }
+
+      this.logger.info(`[OpenCodeAgent] Created session: ${sessionId}`);
+      return sessionId;
+    } catch (error) {
+      this.logger.error(`[OpenCodeAgent] Create session failed: ${(error as Error).message}`);
+      throw error;
     }
-
-    this.logger.info(`[OpenCodeAgent] Created session: ${sessionId}`);
-    return sessionId;
   }
 
   async sendPrompt(sessionId: string, prompt: string): Promise<string | null> {
@@ -125,31 +130,16 @@ export class OpenCodeAgent implements IAgent {
 
     this.logger.info(`[OpenCodeAgent] Sending prompt to session ${sessionId}`);
 
+    // SSE 模式
     try {
-      if (progressConfig.enabled !== false) {
-        return await this.sendPromptWithSSE(sessionId, prompt, timeout, progressConfig);
-      }
-    } catch (sseError) {
-      const errorMsg = (sseError as Error).message;
-      this.logger.warn(`[OpenCodeAgent] SSE failed (${errorMsg}), falling back to sync mode`);
+      return await this.sendPromptWithSSE(sessionId, prompt, timeout, progressConfig);
+    } catch (error) {
+      const errorMsg = (error as Error).message;
+      this.logger.error(`[OpenCodeAgent] SSE failed: ${errorMsg}`);
       
-      // 如果是超时错误，直接返回超时提示，不再尝试 fallback
+      // 超时错误返回友好提示
       if (errorMsg.includes('timed out') || errorMsg.includes('timeout') || errorMsg.includes('Timeout')) {
-        this.logger.error('[OpenCodeAgent] Request timed out, returning error message');
         return `⚠️ 请求超时，OpenCode Agent 响应时间过长（${timeout}ms）`;
-      }
-    }
-
-    // 尝试 sync fallback
-    try {
-      return this.sendPromptSync(sessionId, prompt);
-    } catch (syncError) {
-      const errorMsg = (syncError as Error).message;
-      this.logger.error(`[OpenCodeAgent] Sync fallback failed: ${errorMsg}`);
-      
-      // 如果 sync 也失败，返回错误消息而不是抛出错误
-      if (errorMsg.includes('timed out') || errorMsg.includes('timeout')) {
-        return `⚠️ 请求超时，请稍后重试`;
       }
       
       // 其他错误也返回友好提示
@@ -166,21 +156,27 @@ export class OpenCodeAgent implements IAgent {
       throw new Error('Agent not initialized');
     }
 
-    await this.client.postSessionIdPermissionsPermissionId({
-      path: { id: sessionId, permissionId },
-      body: { response },
-    });
+    this.logger.info(`[OpenCodeAgent] Replying to permission ${permissionId}`);
 
-    this.logger.info(`[OpenCodeAgent] Permission ${permissionId} ${response}ed`);
+    try {
+      await this.client.postSessionIdPermissionsPermissionId({
+        path: { id: sessionId, permissionId },
+        body: { response },
+      });
+      this.logger.info(`[OpenCodeAgent] Permission ${permissionId} ${response}ed`);
+    } catch (error) {
+      this.logger.error(`[OpenCodeAgent] Permission ${permissionId} reply failed: ${(error as Error).message}`);
+      throw error;
+    }
   }
 
   async replyQuestion(requestId: string, answer: unknown): Promise<void> {
     const timeout = this.config.timeout || DEFAULT_REQUEST_TIMEOUT;
 
-    this.logger.info(`[OpenCodeAgent] Replying to question ${requestId} with timeout ${timeout}ms`);
+    this.logger.info(`[OpenCodeAgent] Replying to question ${requestId} with answer: ${JSON.stringify(answer)}`);
 
     try {
-      await fetchWithTimeout(
+      const response = await fetchWithTimeout(
         `${this.config.url}/question/${requestId}/reply`,
         {
           method: 'POST',
@@ -189,6 +185,20 @@ export class OpenCodeAgent implements IAgent {
         },
         timeout
       );
+
+      const responseText = await response.text();
+      this.logger.info(`[OpenCodeAgent] Question ${requestId} reply response: ${responseText}`);
+
+      try {
+        const responseData = JSON.parse(responseText);
+        if (responseData.success === false) {
+          throw new Error(responseData.error?.[0]?.message || 'Reply failed');
+        }
+      } catch (parseError) {
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}: ${responseText}`);
+        }
+      }
 
       this.logger.info(`[OpenCodeAgent] Question ${requestId} replied successfully`);
     } catch (error) {
@@ -200,10 +210,10 @@ export class OpenCodeAgent implements IAgent {
   async rejectQuestion(requestId: string): Promise<void> {
     const timeout = this.config.timeout || DEFAULT_REQUEST_TIMEOUT;
 
-    this.logger.info(`[OpenCodeAgent] Rejecting question ${requestId} with timeout ${timeout}ms`);
+    this.logger.info(`[OpenCodeAgent] Rejecting question ${requestId}`);
 
     try {
-      await fetchWithTimeout(
+      const response = await fetchWithTimeout(
         `${this.config.url}/question/${requestId}/reject`,
         {
           method: 'POST',
@@ -212,10 +222,59 @@ export class OpenCodeAgent implements IAgent {
         timeout
       );
 
+      const responseText = await response.text();
+      this.logger.info(`[OpenCodeAgent] Question ${requestId} reject response: ${responseText}`);
+
+      try {
+        const responseData = JSON.parse(responseText);
+        if (responseData.success === false) {
+          throw new Error(responseData.error?.[0]?.message || 'Reject failed');
+        }
+      } catch (parseError) {
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}: ${responseText}`);
+        }
+      }
+
       this.logger.info(`[OpenCodeAgent] Question ${requestId} rejected successfully`);
     } catch (error) {
       this.logger.error(`[OpenCodeAgent] Question ${requestId} reject failed: ${(error as Error).message}`);
       throw error;
+    }
+  }
+
+  /**
+   * 获取 Session 的 token 使用量
+   */
+  async getSessionTokenUsage(sessionId: string): Promise<{ total: number; input: number; output: number } | null> {
+    if (!this.client) {
+      return null;
+    }
+
+    try {
+      const result = await this.client.session.message({
+        path: { id: sessionId },
+        query: { limit: 1 },
+      });
+
+      const messages = result?.data;
+      if (Array.isArray(messages) && messages.length > 0) {
+        const lastMessage = messages[0];
+        const info = lastMessage?.info as { tokens?: { total?: number; input?: number; output?: number } } | undefined;
+        
+        if (info?.tokens) {
+          return {
+            total: info.tokens.total || 0,
+            input: info.tokens.input || 0,
+            output: info.tokens.output || 0,
+          };
+        }
+      }
+
+      return null;
+    } catch (error) {
+      this.logger.warn(`[OpenCodeAgent] Failed to get token usage: ${(error as Error).message}`);
+      return null;
     }
   }
 
@@ -224,7 +283,7 @@ export class OpenCodeAgent implements IAgent {
   }
 
   // ============================================================
-  // 内部方法
+  // 内部方法 - SSE 模式
   // ============================================================
 
   private async sendPromptWithSSE(
@@ -239,7 +298,7 @@ export class OpenCodeAgent implements IAgent {
 
     this.logger.info('[OpenCodeAgent] Starting SSE mode');
 
-    // 包裹 SSE subscribe，防止网络失败导致未捕获错误
+    // SSE subscribe
     let eventStream;
     try {
       eventStream = await this.client.event.subscribe();
@@ -253,6 +312,7 @@ export class OpenCodeAgent implements IAgent {
       throw new Error('Event stream not available');
     }
 
+    // 构建 prompt body
     const body: Record<string, unknown> = {
       parts: [{ type: 'text' as const, text: prompt }],
     };
@@ -264,16 +324,19 @@ export class OpenCodeAgent implements IAgent {
       };
     }
 
+    // 发送 prompt
     const promptPromise = this.client.session.prompt({
       path: { id: sessionId },
       body,
     });
 
+    // SSE 事件循环
     const textParts: Record<number, string> = {};
     let completed = false;
     const startTime = Date.now();
-
     const streamIterator = eventStream.stream[Symbol.asyncIterator]();
+
+    this.logger.info(`[OpenCodeAgent] Starting SSE loop for session ${sessionId}`);
 
     while (!completed && Date.now() - startTime < timeout) {
       let eventResult;
@@ -281,7 +344,7 @@ export class OpenCodeAgent implements IAgent {
         eventResult = await Promise.race([
           streamIterator.next(),
           new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error('read_timeout')), 5000)
+            setTimeout(() => reject(new Error('read_timeout')), SSE_READ_TIMEOUT)
           ),
         ]);
       } catch (err) {
@@ -291,20 +354,26 @@ export class OpenCodeAgent implements IAgent {
         throw err;
       }
 
-      if (eventResult.done) break;
+      if (eventResult.done) {
+        this.logger.info('[OpenCodeAgent] SSE stream ended (done=true)');
+        break;
+      }
 
       const event = eventResult.value;
       const eventType = (event as { type?: string }).type;
       const props = (event as { properties?: Record<string, unknown> }).properties || {};
 
+      this.logger.info(`[OpenCodeAgent] SSE event: ${eventType}`);
+
       // 过滤非当前 session 的事件
-      // message.part.updated: sessionID 在 part 中
-      // session.idle/session.error: sessionID 在 properties 中
       const partSessionId = (props.part as { sessionID?: string })?.sessionID;
       const eventSessionId =
         props.sessionID || (props.info as { sessionID?: string })?.sessionID || partSessionId;
-      if (eventSessionId && eventSessionId !== sessionId) continue;
+      if (eventSessionId && eventSessionId !== sessionId) {
+        continue;
+      }
 
+      // 处理事件
       switch (eventType) {
         case 'message.part.updated': {
           const part = props.part as Record<string, unknown> | undefined;
@@ -339,18 +408,17 @@ export class OpenCodeAgent implements IAgent {
 
         case 'session.idle':
           completed = true;
+          this.logger.info('[OpenCodeAgent] Session idle, SSE loop completed');
           break;
 
         case 'session.error': {
           const error = props.error as { message?: string; name?: string } | undefined;
           const errorSessionId = props.sessionID as string | undefined;
-          // 只有当错误属于当前 session 或是全局错误（无 sessionID）时才抛出
           if (!errorSessionId || errorSessionId === sessionId) {
             const errorMsg = error?.message || (error?.name || 'Session error');
             this.logger.error(`[OpenCodeAgent] Session error: ${errorMsg}`);
             throw new Error(errorMsg);
           }
-          // 其他 session 的错误，忽略并继续监听
           break;
         }
 
@@ -361,12 +429,24 @@ export class OpenCodeAgent implements IAgent {
           });
           break;
 
-        case 'question.asked':
+        case 'question.asked': {
+          this.logger.info(`[OpenCodeAgent] Question asked: ${JSON.stringify(props, null, 2)}`);
           await this.emitEvent({
             type: 'question',
             data: this.mapQuestion(props, sessionId),
           });
           break;
+        }
+
+        case 'question.replied': {
+          this.logger.info(`[OpenCodeAgent] Question replied: ${JSON.stringify(props)}`);
+          break;
+        }
+
+        case 'question.rejected': {
+          this.logger.info(`[OpenCodeAgent] Question rejected: ${JSON.stringify(props)}`);
+          break;
+        }
       }
     }
 
@@ -380,183 +460,14 @@ export class OpenCodeAgent implements IAgent {
       /* ignore */
     }
 
+    // 返回响应文本
     const response = Object.keys(textParts)
       .sort((a, b) => Number(a) - Number(b))
       .map((k) => textParts[Number(k)])
       .join('\n\n');
 
+    this.logger.info(`[OpenCodeAgent] Response length: ${response.length}`);
     return response || null;
-  }
-
-  private async sendPromptSync(sessionId: string, prompt: string): Promise<string | null> {
-    if (!this.client) {
-      throw new Error('Agent not initialized');
-    }
-
-    this.logger.info('[OpenCodeAgent] Using sync mode with SSE for permission/question');
-
-    const body: Record<string, unknown> = {
-      parts: [{ type: 'text' as const, text: prompt }],
-    };
-
-    if (this.config.modelId && this.config.providerId) {
-      body.model = {
-        providerID: this.config.providerId,
-        modelID: this.config.modelId,
-      };
-    }
-
-    const timeout = this.config.timeout || DEFAULT_REQUEST_TIMEOUT;
-
-    // 启动 SSE 监听（只处理 permission/question）
-    let eventStream;
-    try {
-      eventStream = await this.client.event.subscribe();
-    } catch (subscribeError) {
-      const errorMsg = (subscribeError as Error).message;
-      this.logger.warn(`[OpenCodeAgent] SSE subscribe failed in sync mode: ${errorMsg}`);
-      // SSE 失败时直接使用纯同步模式
-      return this.sendPromptPureSync(sessionId, body);
-    }
-    
-    if (!eventStream?.stream) {
-      this.logger.warn('[OpenCodeAgent] SSE not available, falling back to pure sync');
-      return this.sendPromptPureSync(sessionId, body);
-    }
-
-    const promptPromise = this.client.session.prompt({
-      path: { id: sessionId },
-      body,
-    });
-
-    let completed = false;
-    const startTime = Date.now();
-    const streamIterator = eventStream.stream[Symbol.asyncIterator]();
-
-    while (!completed && Date.now() - startTime < timeout) {
-      let eventResult;
-      try {
-        eventResult = await Promise.race([
-          streamIterator.next(),
-          new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error('read_timeout')), 5000)
-          ),
-        ]);
-      } catch (err) {
-        if ((err as Error).message === 'read_timeout') {
-          continue;
-        }
-        throw err;
-      }
-
-      if (eventResult.done) break;
-
-      const event = eventResult.value;
-      const eventType = (event as { type?: string }).type;
-      const props = (event as { properties?: Record<string, unknown> }).properties || {};
-
-      // 过滤非当前 session 的事件
-      const eventSessionId = props.sessionID;
-      if (eventSessionId && eventSessionId !== sessionId) continue;
-
-      switch (eventType) {
-        case 'session.idle':
-          completed = true;
-          break;
-
-        case 'session.error': {
-          const error = props.error as { message?: string; name?: string } | undefined;
-          const errorSessionId = props.sessionID as string | undefined;
-          if (!errorSessionId || errorSessionId === sessionId) {
-            const errorMsg = error?.message || (error?.name || 'Session error');
-            this.logger.error(`[OpenCodeAgent] Session error: ${errorMsg}`);
-            throw new Error(errorMsg);
-          }
-          break;
-        }
-
-        case 'permission.updated':
-          await this.emitEvent({
-            type: 'permission',
-            data: this.mapPermission(props, sessionId),
-          });
-          break;
-
-        case 'question.asked':
-          await this.emitEvent({
-            type: 'question',
-            data: this.mapQuestion(props, sessionId),
-          });
-          break;
-      }
-    }
-
-    // 等待 prompt 完成
-    try {
-      await Promise.race([
-        promptPromise,
-        new Promise((_, r) => setTimeout(() => r(new Error('timeout')), 3000)),
-      ]);
-    } catch {
-      /* ignore */
-    }
-
-    // 获取最终消息内容
-    try {
-      const messageResult = await this.client.session.message({
-        path: { id: sessionId },
-        query: { limit: 1 },
-      });
-
-      const messages = messageResult?.data;
-      if (Array.isArray(messages) && messages.length > 0) {
-        // 获取最新的 assistant 消息的 parts
-        const lastMessage = messages[0];
-        if (lastMessage?.parts && Array.isArray(lastMessage.parts)) {
-          const textParts = lastMessage.parts
-            .filter((p: { type: string }) => p.type === 'text')
-            .map((p: { text: string }) => p.text)
-            .join('\n');
-          return textParts || null;
-        }
-      }
-    } catch (error) {
-      this.logger.warn(`[OpenCodeAgent] Failed to get final message: ${(error as Error).message}`);
-    }
-
-    return null;
-  }
-
-  /**
-   * 纯同步模式（无 SSE，不支持 permission/question）
-   */
-  private async sendPromptPureSync(
-    sessionId: string,
-    body: Record<string, unknown>
-  ): Promise<string | null> {
-    this.logger.warn('[OpenCodeAgent] Pure sync mode - no permission/question support');
-
-    try {
-      const result = await this.client.session.prompt({
-        path: { id: sessionId },
-        body,
-      });
-
-      const data = result?.data;
-      if (data?.parts && Array.isArray(data.parts)) {
-        const textParts = data.parts
-          .filter((p: { type: string }) => p.type === 'text')
-          .map((p: { text: string }) => p.text)
-          .join('\n');
-        return textParts || null;
-      }
-
-      return null;
-    } catch (promptError) {
-      const errorMsg = (promptError as Error).message;
-      this.logger.error(`[OpenCodeAgent] Pure sync prompt failed: ${errorMsg}`);
-      throw new Error(`Failed to send prompt: ${errorMsg}`);
-    }
   }
 
   private async emitEvent(event: AgentEvent): Promise<void> {
@@ -585,8 +496,14 @@ export class OpenCodeAgent implements IAgent {
       options?: Array<{ label: string; description?: string }>;
     }>) || [];
 
+    const requestId = (props.id as string) || '';
+
+    if (!requestId) {
+      this.logger.error('[OpenCodeAgent] Question event has no id field!');
+    }
+
     return {
-      id: (props.id as string) || '',
+      id: requestId,
       sessionId,
       questions: questions.map((q) => ({
         question: q.question || '',

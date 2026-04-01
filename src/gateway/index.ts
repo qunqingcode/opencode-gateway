@@ -128,17 +128,73 @@ export class Gateway {
 
   async processMessage(message: StandardMessage): Promise<void> {
     const { chatId, userId, channelId } = message.source;
-    const text = message.content.text || '';
+    let text = message.content.text || '';
 
     this.logger.info(`[Gateway] Message from ${chatId}: ${text.slice(0, 50)}...`);
 
     try {
+      // 处理特殊命令
+      if (text === '/new' || text === '/reset') {
+        const session = this.sessionManager.getOrCreate(chatId);
+        const oldSessionId = session.agentSessionId;
+        
+        // 创建新 session
+        const newSessionId = await this.agent.createSession();
+        session.agentSessionId = newSessionId;
+        this.sessionManager.save();
+        
+        const channel = this.channels.get(channelId);
+        if (channel) {
+          await channel.sendText(chatId, `✅ 已开启新会话。\n\n_旧会话: ${oldSessionId || '无'}_\n_新会话: ${newSessionId}_`);
+        }
+        return;
+      }
+
+      // 显示当前 session 信息
+      if (text === '/session' || text === '/info') {
+        const session = this.sessionManager.getOrCreate(chatId);
+        const channel = this.channels.get(channelId);
+        
+        if (!channel) return;
+        
+        if (session.agentSessionId && this.agent.getSessionTokenUsage) {
+          const usage = await this.agent.getSessionTokenUsage(session.agentSessionId);
+          await channel.sendText(chatId, `📊 **当前会话信息**\n\n- Session ID: ${session.agentSessionId}\n- Token 使用: ${usage?.total?.toLocaleString() || '未知'} / 200,000\n- 使用率: ${usage ? ((usage.total / 200000) * 100).toFixed(1) : '?'}%`);
+        } else {
+          await channel.sendText(chatId, `📊 **当前会话信息**\n\n- Session ID: ${session.agentSessionId || '未创建'}`);
+        }
+        return;
+      }
+
       // 获取或创建 Session
       const session = this.sessionManager.getOrCreate(chatId);
-      const agentSessionId = session.agentSessionId || await this.agent.createSession();
+      let agentSessionId = session.agentSessionId;
 
-      // 关联 Agent Session
-      if (!session.agentSessionId) {
+      // 检查 token 使用量，如果接近限制则自动创建新 session
+      const MAX_TOKENS = 150000; // 200K 模型，预留 50K 余量
+      
+      if (agentSessionId && this.agent.getSessionTokenUsage) {
+        const usage = await this.agent.getSessionTokenUsage(agentSessionId);
+        
+        if (usage && usage.total >= MAX_TOKENS) {
+          this.logger.info(`[Gateway] Session ${agentSessionId} reached token limit (${usage.total}), creating new session`);
+          
+          // 创建新 session
+          agentSessionId = await this.agent.createSession();
+          session.agentSessionId = agentSessionId;
+          this.sessionManager.save();
+          
+          // 通知用户
+          const channel = this.channels.get(channelId);
+          if (channel) {
+            await channel.sendText(chatId, '⚠️ 上下文长度已接近限制，已自动开启新会话。');
+          }
+        }
+      }
+
+      // 如果没有 agentSessionId，创建一个新的
+      if (!agentSessionId) {
+        agentSessionId = await this.agent.createSession();
         session.agentSessionId = agentSessionId;
         this.sessionManager.save();
       }

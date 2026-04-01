@@ -65,7 +65,6 @@ export interface AgentConfig {
   providerId?: string;
   /** 进度通知配置 */
   progress?: {
-    enabled?: boolean;
     showToolStatus?: boolean;
     showTextOutput?: boolean;
   };
@@ -84,6 +83,9 @@ export interface IAgent {
 
   /** 发送 Prompt */
   sendPrompt(sessionId: string, prompt: string): Promise<string | null>;
+
+  /** 获取 Session 的 token 使用量 */
+  getSessionTokenUsage?(sessionId: string): Promise<{ total: number; input: number; output: number } | null>;
 
   /** 注册事件处理器 */
   onEvent(handler: AgentEventHandler): void;

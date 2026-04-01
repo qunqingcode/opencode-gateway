@@ -20,7 +20,6 @@ export interface AppConfig {
     modelId?: string;
     providerId?: string;
     progress?: {
-      enabled: boolean;
       showToolStatus: boolean;
       showTextOutput: boolean;
     };
@@ -96,7 +95,6 @@ export function loadConfigFromEnv(): AppConfig {
       modelId: process.env.OPENCODE_MODEL_ID,
       providerId: process.env.OPENCODE_PROVIDER_ID,
       progress: {
-        enabled: process.env.PROGRESS_ENABLED !== 'false',
         showToolStatus: process.env.PROGRESS_TOOL_STATUS === 'true',
         showTextOutput: process.env.PROGRESS_TEXT_OUTPUT === 'true',
       },
