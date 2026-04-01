@@ -63,8 +63,9 @@ async function main() {
       webhookPort: config.channels.feishu.webhookPort,
     }, logger);
 
-    await feishu.connect();
+    // 先注册再连接（registerChannel 会注册 onInteraction 处理器）
     gateway.registerChannel(feishu);
+    await feishu.connect();
   }
 
   // 启动 MCP HTTP Server
@@ -85,6 +86,19 @@ async function main() {
 
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
+
+  // 全局 unhandled rejection 监听器（防止进程崩溃）
+  process.on('unhandledRejection', (reason, promise) => {
+    logger.error('[UnhandledRejection] Unhandled promise rejection:', reason);
+    logger.error('[UnhandledRejection] Promise:', promise);
+    // 不退出进程，让网关继续运行
+  });
+
+  // 全局 uncaught exception 监听器（防止进程崩溃）
+  process.on('uncaughtException', (error) => {
+    logger.error('[UncaughtException] Uncaught exception:', error);
+    // 不退出进程，让网关继续运行
+  });
 }
 
 main().catch((err) => {

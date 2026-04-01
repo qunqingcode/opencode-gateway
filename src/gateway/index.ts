@@ -95,9 +95,14 @@ export class Gateway {
   registerChannel(channel: IChannel): void {
     this.channels.set(channel.id, channel);
 
-    // 注册消息处理器
+    // 注册消息处理器（包裹 try-catch 防止 unhandled rejection）
     channel.onMessage(async (message: StandardMessage) => {
-      await this.processMessage(message);
+      try {
+        await this.processMessage(message);
+      } catch (error) {
+        this.logger.error(`[Gateway] Unhandled error in message handler: ${(error as Error).message}`);
+        // 不要让错误传播出去，已经在上层处理了
+      }
     });
 
     // 注册交互处理器
@@ -152,11 +157,18 @@ export class Gateway {
         }
       }
     } catch (error) {
-      this.logger.error(`[Gateway] Message processing failed: ${(error as Error).message}`);
+      const errorMsg = (error as Error).message;
+      this.logger.error(`[Gateway] Message processing failed: ${errorMsg}`);
 
-      const channel = this.channels.get(channelId);
-      if (channel) {
-        await channel.sendText(chatId, `❌ 处理出错: ${(error as Error).message}`);
+      // 尝试发送错误消息给用户（单独包裹，防止二次失败导致网关挂掉）
+      try {
+        const channel = this.channels.get(channelId);
+        if (channel) {
+          await channel.sendText(chatId, `❌ 处理出错: ${errorMsg}`);
+        }
+      } catch (sendError) {
+        this.logger.error(`[Gateway] Failed to send error message: ${(sendError as Error).message}`);
+        // 不再抛出错误，网关继续运行
       }
     }
   }
