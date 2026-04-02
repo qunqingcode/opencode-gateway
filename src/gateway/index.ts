@@ -55,6 +55,9 @@ export class Gateway {
     this.sessionManager = new SessionManager(config.dataDir || './data', logger);
     this.agent = AgentFactory.create('opencode', config.agent, logger);
 
+    // 让 ToolRegistry 能获取当前活跃上下文
+    toolRegistry.getContext = () => this.createToolContext();
+
     // 如果提供了 cronStore，立即创建 scheduler（init 时启动）
     if (cronStore) {
       this.cronScheduler = new CronScheduler(
@@ -246,15 +249,18 @@ export class Gateway {
     const toolName = action;
     const toolArgs = ((value as Record<string, unknown>)?.args as Record<string, unknown>) || value;
 
+    // 卡片交互是异步的，需要从 event 获取上下文，而不是 activeContext
     const context = this.createToolContext(event);
 
     const result = await this.toolRegistry.execute(toolName, toolArgs, context);
+
+    this.logger.info(`[Gateway] Tool execution result card: ${JSON.stringify(result.card, null, 2)}`);
 
     return {
       toast: result.success
         ? { type: 'success', content: '操作成功' }
         : { type: 'error', content: result.error || '操作失败' },
-      card: result.approvalCard,
+      card:{type:'raw',data:result.card} 
     };
   }
 
@@ -491,19 +497,44 @@ export class Gateway {
   // 工具上下文
   // ============================================================
 
-  private createToolContext(event: InteractionEvent): ToolContext {
-    const channel = this.channels.get(event.channelId);
+  /**
+   * 创建工具上下文
+   * 
+   * @param event - 卡片交互事件（异步场景，从 event 获取上下文）
+   *                不传则从 activeContext 获取（同步场景）
+   */
+  private createToolContext(event?: InteractionEvent): ToolContext | undefined {
+    // 异步场景：从 event 获取
+    if (event) {
+      const channel = this.channels.get(event.channelId);
+      return {
+        chatId: event.chatId,
+        userId: event.userId,
+        messageId: event.messageId,
+        sessionId: this.activeContext?.sessionId || '',
+        sendText: async (text: string) => {
+          await channel?.sendText(event.chatId, text);
+        },
+        sendCard: async (card: unknown) => {
+          await channel?.sendCard(event.chatId, card);
+        },
+        logger: this.logger,
+      };
+    }
 
+    // 同步场景：从 activeContext 获取
+    if (!this.activeContext) return undefined;
+
+    const channel = this.channels.get(this.activeContext.channelId);
     return {
-      chatId: event.chatId,
-      userId: event.userId,
-      messageId: event.messageId,
-      sessionId: this.activeContext?.sessionId || '',
+      chatId: this.activeContext.chatId,
+      userId: this.activeContext.userId,
+      sessionId: this.activeContext.sessionId,
       sendText: async (text: string) => {
-        await channel?.sendText(event.chatId, text);
+        await channel?.sendText(this.activeContext!.chatId, text);
       },
       sendCard: async (card: unknown) => {
-        await channel?.sendCard(event.chatId, card);
+        await channel?.sendCard(this.activeContext!.chatId, card);
       },
       logger: this.logger,
     };

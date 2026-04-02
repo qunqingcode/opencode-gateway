@@ -14,6 +14,9 @@ import type { ToolDefinition, ToolResult, ToolContext, ITool } from './types';
 export class ToolRegistry {
   private tools = new Map<string, ITool>();
   private logger: Logger;
+  
+  // 让 Gateway 设置获取上下文的方法
+  getContext?: () => ToolContext | undefined;
 
   constructor(logger: Logger) {
     this.logger = logger;
@@ -99,7 +102,7 @@ export class ToolRegistry {
   async execute(
     name: string,
     args: Record<string, unknown>,
-    context: ToolContext
+    context?: ToolContext
   ): Promise<ToolResult> {
     const tool = this.tools.get(name);
 
@@ -110,8 +113,16 @@ export class ToolRegistry {
 
     this.logger.info(`[ToolRegistry] Executing: ${name}`);
 
+    // 如果没有传入 context，尝试从 Gateway 获取
+    const executionContext = context || this.getContext?.();
+
+    if (!executionContext) {
+      this.logger.warn(`[ToolRegistry] No context available for: ${name}`);
+      return { success: false, error: 'No active context' };
+    }
+
     try {
-      const result = await tool.execute(args, context);
+      const result = await tool.execute(args, executionContext);
       this.logger.info(`[ToolRegistry] Result: ${name} - ${result.success ? 'success' : 'failed'}`);
       return result;
     } catch (error) {

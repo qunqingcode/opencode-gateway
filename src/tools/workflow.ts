@@ -245,7 +245,7 @@ class CreateMRForBugConfirmTool extends BaseTool {
       .addMarkdown(results.map((r) => `${r.status === 'success' ? '✅' : '❌'} ${r.step}: ${r.message}`).join('\n'))
       .build();
 
-    return { success: allSuccess, output: { results }, approvalCard: card };
+    return { success: allSuccess, output: { results }, card: card };
   }
 }
 
@@ -390,7 +390,7 @@ class MergeAndCloseBugConfirmTool extends BaseTool {
       .addMarkdown(results.map((r) => `${r.status === 'success' ? '✅' : '❌'} ${r.step}: ${r.message}`).join('\n'))
       .build();
 
-    return { success: allSuccess, output: { results }, approvalCard: card };
+    return { success: allSuccess, output: { results }, card: card };
   }
 }
 

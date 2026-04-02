@@ -51,7 +51,7 @@ export abstract class BaseTool implements ITool {
       success: true,
       requiresApproval: true,
       output: message,
-      approvalCard: card,
+      card: card,
     };
   }
 }

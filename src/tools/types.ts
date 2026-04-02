@@ -73,8 +73,8 @@ export interface ToolResult {
   error?: string;
   /** 是否需要审批 */
   requiresApproval?: boolean;
-  /** 审批卡片数据 */
-  approvalCard?: unknown;
+  /** 卡片数据 */
+  card?: unknown;
 }
 
 // ============================================================

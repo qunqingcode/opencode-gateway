@@ -35,8 +35,8 @@ export function isValidGitBranchName(name: string): boolean {
     return false;
   }
 
-  // 允许的字符：字母、数字、_、-、/、.
-  const pattern = /^[a-zA-Z0-9_\-/.]+$/;
+  // 允许的字符：字母、数字、_、-、/、.、中文
+  const pattern = /^[a-zA-Z0-9_\-/.\u4e00-\u9fa5]+$/;
   return pattern.test(name);
 }
 

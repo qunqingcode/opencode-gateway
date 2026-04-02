@@ -233,7 +233,7 @@ class CreateMRConfirmTool extends BaseTool {
       return {
         success: true,
         output: { message: 'MR 创建成功', url: mr.url },
-        approvalCard: successCard,
+        card: successCard,
       };
     } catch (error) {
       const errorCard = new FeishuCardBuilder()
@@ -245,7 +245,7 @@ class CreateMRConfirmTool extends BaseTool {
       return {
         success: false,
         error: (error as Error).message,
-        approvalCard: errorCard,
+        card: errorCard,
       };
     }
   }

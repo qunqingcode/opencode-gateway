@@ -6,7 +6,7 @@
 
 import http from 'http';
 import type { Logger } from '../../types';
-import type { ToolRegistry, ToolContext } from '../../tools';
+import type { ToolRegistry } from '../../tools';
 
 // ============================================================
 // JSON-RPC 类型
@@ -48,13 +48,6 @@ export class MCPHTTPServer {
   private logger: Logger;
   private config: MCPServerConfig;
   private server: http.Server | null = null;
-  private activeContext: {
-    chatId: string;
-    userId: string;
-    sessionId: string;
-    sendText: (text: string) => Promise<void>;
-    sendCard: (card: unknown) => Promise<void>;
-  } | null = null;
 
   constructor(
     toolRegistry: ToolRegistry,
@@ -64,13 +57,6 @@ export class MCPHTTPServer {
     this.toolRegistry = toolRegistry;
     this.config = config;
     this.logger = logger;
-  }
-
-  /**
-   * 设置活跃上下文
-   */
-  setActiveContext(context: typeof this.activeContext): void {
-    this.activeContext = context;
   }
 
   /**
@@ -245,18 +231,8 @@ export class MCPHTTPServer {
       throw new Error('Missing tool name');
     }
 
-    // 构建上下文
-    const context: ToolContext = {
-      chatId: this.activeContext?.chatId || '',
-      userId: this.activeContext?.userId || '',
-      sessionId: this.activeContext?.sessionId || '',
-      sendText: this.activeContext?.sendText || (async () => {}),
-      sendCard: this.activeContext?.sendCard || (async () => {}),
-      logger: this.logger,
-    };
-
-    // 执行工具
-    const result = await this.toolRegistry.execute(name, args || {}, context);
+    // 执行工具（ToolRegistry 会自动获取上下文）
+    const result = await this.toolRegistry.execute(name, args || {});
 
     return {
       content: [
@@ -293,18 +269,8 @@ export class MCPHTTPServer {
 
       this.logger.info(`[MCPServer] CLI call: ${tool}`);
 
-      // 构建上下文
-      const context: ToolContext = {
-        chatId: this.activeContext?.chatId || process.env.FEISHU_DEFAULT_CHAT_ID || '',
-        userId: this.activeContext?.userId || 'cli-user',
-        sessionId: this.activeContext?.sessionId || 'cli-session',
-        sendText: this.activeContext?.sendText || (async () => {}),
-        sendCard: this.activeContext?.sendCard || (async () => {}),
-        logger: this.logger,
-      };
-
-      // 执行工具
-      const result = await this.toolRegistry.execute(tool, args || {}, context);
+      // 执行工具（ToolRegistry 会自动获取上下文）
+      const result = await this.toolRegistry.execute(tool, args || {});
 
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
