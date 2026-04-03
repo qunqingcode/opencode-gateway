@@ -30,3 +30,7 @@ coverage/
 # Temporary files
 temp/
 tmp/
+.claude/
+.opencode/
+.sisyphus/
+docs/
