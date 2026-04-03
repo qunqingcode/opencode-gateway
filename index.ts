@@ -11,12 +11,15 @@
 
 require('dotenv').config();
 
+import path from 'path';
 import { appLogger as logger } from './src/utils/logger';
 import { loadConfigFromEnv } from './src/config';
 import { Gateway } from './src/gateway';
 import { MCPHTTPServer } from './src/callers';
 import { ToolRegistry, createAllTools } from './src/tools';
 import { FeishuChannel } from './src/channels';
+import { FlowManager } from './src/flow';
+import { createFlowExecuteTool } from './src/tools/flow';
 
 // ============================================================
 // 启动
@@ -52,6 +55,39 @@ async function main() {
   // 初始化 Gateway
   await gateway.init();
 
+  // ============================================================
+  // 初始化 Flow 引擎
+  // ============================================================
+  
+  if (config.flow?.enabled !== false) {
+    const flowTemplatesDir = config.flow?.templatesDir 
+      || path.join(config.dataDir, 'flows');
+    
+    const flowManager = new FlowManager(
+      toolRegistry,
+      gateway.getAgent(),
+      {
+        templatesDir: flowTemplatesDir,
+      },
+      logger
+    );
+
+    await flowManager.init();
+
+    // 注册 flow.execute 工具
+    const flowExecuteTool = createFlowExecuteTool(flowManager, logger);
+    toolRegistry.register(flowExecuteTool);
+
+    // 设置 FlowManager 到 Gateway（用于审批恢复）
+    gateway.setFlowManager(flowManager);
+
+    logger.info(`[Startup] Flow engine initialized with ${flowManager.listFlows().length} flows`);
+  }
+
+  // ============================================================
+  // 注册渠道
+  // ============================================================
+
   // 注册飞书渠道
   if (config.channels.feishu?.enabled) {
     const feishu = new FeishuChannel({
@@ -68,7 +104,10 @@ async function main() {
     await feishu.connect();
   }
 
-  // 启动 MCP HTTP Server
+  // ============================================================
+  // 启动 MCP Server
+  // ============================================================
+
   const mcpServer = new MCPHTTPServer(toolRegistry, {
     port: config.mcp?.port || 3100,
     host: config.mcp?.host || 'localhost',
@@ -76,7 +115,10 @@ async function main() {
 
   await mcpServer.start();
 
+  // ============================================================
   // 优雅关闭
+  // ============================================================
+
   const shutdown = async () => {
     logger.info('[Shutdown] Graceful shutdown...');
     await gateway.shutdown();

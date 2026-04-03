@@ -53,7 +53,7 @@ export function createApprovalCard(options: ApprovalCardOptions) {
     confirmLabel = '确认',
     cancelLabel = '取消',
     confirmAction,
-    cancelAction = 'workflow.cancel',
+    cancelAction = 'common.cancel',
     args,
     template = 'blue',
     operatorOpenId,

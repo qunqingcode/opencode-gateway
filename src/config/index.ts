@@ -59,9 +59,12 @@ export interface AppConfig {
       password?: string;
       projectId?: string | number;
     };
-    workflow?: {
-      enabled: boolean;
-    };
+  };
+
+  /** Flow 配置 */
+  flow?: {
+    enabled: boolean;
+    templatesDir?: string;
   };
 
   /** 第三方 MCP Server 配置 */
@@ -131,9 +134,11 @@ export function loadConfigFromEnv(): AppConfig {
         password: process.env.ZENTAO_PASSWORD,
         projectId: process.env.ZENTAO_PROJECT_ID,
       },
-      workflow: {
-        enabled: !!(process.env.GITLAB_URL && process.env.GITLAB_TOKEN && process.env.ZENTAO_BASE_URL),
-      },
+    },
+
+    flow: {
+      enabled: process.env.FLOW_ENABLED !== 'false', // 默认启用
+      templatesDir: process.env.FLOW_TEMPLATES_DIR,
     },
 
     // 第三方 MCP Servers

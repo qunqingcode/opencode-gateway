@@ -8,10 +8,11 @@ import type { Logger } from '../types';
 import type { ITool } from './types';
 import { createGitLabTools } from './gitlab';
 import { createZentaoTools } from './zentao';
-import { createWorkflowTools } from './workflow';
 import { createFeishuTools } from './feishu';
 import { createCronTools, CronStore } from './cron';
 import { createMCPProxyTools, MCPProxyTool } from './mcp-proxy';
+import { createFlowExecuteTool } from './flow';
+import type { FlowManager } from '../flow';
 
 // 类型
 export type {
@@ -36,6 +37,9 @@ export { createTool } from './types';
 // 注册表
 export { ToolRegistry } from './registry';
 
+// Flow 工具
+export { createFlowExecuteTool } from './flow';
+
 // ============================================================
 // 配置类型
 // ============================================================
@@ -58,10 +62,6 @@ export interface ToolsConfig {
     account?: string;
     password?: string;
     projectId?: string | number;
-  };
-  /** Workflow 配置 */
-  workflow?: {
-    enabled: boolean;
   };
   /** 第三方 MCP Server 配置 */
   mcpServers?: {
@@ -86,6 +86,8 @@ export interface CreateAllToolsResult {
   tools: ITool[];
   /** Cron Store（供 Gateway 创建 scheduler） */
   cronStore?: CronStore;
+  /** Flow Manager（供 Gateway 注入 Agent） */
+  flowManager?: FlowManager;
 }
 
 // ============================================================
@@ -126,15 +128,7 @@ export async function createAllTools(
     tools.push(...await createZentaoTools(config.zentao, logger));
   }
 
-  // 5. Workflow 工具（需要 GitLab + 禅道）
-  if (config.workflow?.enabled && config.gitlab && config.zentao) {
-    tools.push(...await createWorkflowTools({
-      gitlab: config.gitlab,
-      zentao: config.zentao,
-    }, logger));
-  }
-
-  // 6. 第三方 MCP Server 工具（动态发现，每个工具独立）
+  // 5. 第三方 MCP Server 工具（动态发现，每个工具独立）
   if (config.mcpServers) {
     for (const [name, serverConfig] of Object.entries(config.mcpServers)) {
       if (serverConfig.enabled) {

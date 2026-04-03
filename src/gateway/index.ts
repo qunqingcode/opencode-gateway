@@ -23,6 +23,7 @@ import type {
 } from './types';
 import { SessionManager } from './session';
 import { CronScheduler } from './cron-scheduler';
+import type { FlowManager } from '../flow';
 
 // ============================================================
 // Gateway 实现
@@ -36,6 +37,7 @@ export class Gateway {
   private sessionManager: SessionManager;
   private channels = new Map<string, IChannel>();
   private cronScheduler?: CronScheduler;
+  private flowManager?: FlowManager;
   private activeContext: {
     chatId: string;
     userId: string;
@@ -86,6 +88,27 @@ export class Gateway {
     this.cronScheduler?.start();
 
     this.logger.info('[Gateway] Initialized');
+  }
+
+  /**
+   * 获取 Agent 实例
+   */
+  getAgent(): IAgent {
+    return this.agent;
+  }
+
+  /**
+   * 设置 FlowManager
+   */
+  setFlowManager(flowManager: FlowManager): void {
+    this.flowManager = flowManager;
+  }
+
+  /**
+   * 获取 FlowManager
+   */
+  getFlowManager(): FlowManager | undefined {
+    return this.flowManager;
   }
 
   // ============================================================
@@ -240,6 +263,11 @@ export class Gateway {
     const { action, value } = event;
     this.logger.info(`[Gateway] Interaction: ${action}`);
 
+    // 处理审批交互
+    if (action === 'approval.approve' || action === 'approval.reject') {
+      return this.handleApprovalInteraction(action, value);
+    }
+
     // 处理 OpenCode Agent 相关交互
     if (action.startsWith('opencode.')) {
       return this.handleOpenCodeInteraction(action, value);
@@ -262,6 +290,49 @@ export class Gateway {
         : { type: 'error', content: result.error || '操作失败' },
       card:{type:'raw',data:result.card} 
     };
+  }
+
+  /**
+   * 处理审批交互
+   */
+  private async handleApprovalInteraction(action: string, value: Record<string, unknown>): Promise<InteractionResult> {
+    const args = (value as Record<string, unknown>)?.args as Record<string, unknown> || value;
+    const approvalId = args.approvalId as string;
+
+    if (!approvalId) {
+      return { toast: { type: 'error', content: '缺少审批 ID' } };
+    }
+
+    // 查找对应的 FlowEngine 暂停执行
+    const flowManager = this.getFlowManager();
+    if (!flowManager) {
+      return { toast: { type: 'error', content: 'Flow 引擎未初始化' } };
+    }
+
+    const pausedExecution = flowManager.engine.findPausedExecutionByApprovalId(approvalId);
+
+    if (!pausedExecution) {
+      return { toast: { type: 'error', content: '审批请求不存在或已过期' } };
+    }
+
+    const approved = action === 'approval.approve';
+
+    try {
+      // 恢复 Flow 执行
+      const result = await flowManager.engine.resume(pausedExecution.executionId, approved);
+
+      this.logger.info(`[Gateway] Approval ${approvalId} ${approved ? 'approved' : 'rejected'}`);
+
+      return {
+        toast: approved
+          ? { type: 'success', content: '✅ 已确认' }
+          : { type: 'info', content: '已取消' },
+        card: result.card ? { type: 'raw', data: result.card } : undefined,
+      };
+    } catch (error) {
+      this.logger.error(`[Gateway] Approval handling error: ${(error as Error).message}`);
+      return { toast: { type: 'error', content: `操作失败: ${(error as Error).message}` } };
+    }
   }
 
   /**

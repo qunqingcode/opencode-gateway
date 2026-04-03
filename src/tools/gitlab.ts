@@ -142,45 +142,44 @@ class CreateMRTool extends BaseTool {
       InputValidator.validateUrl(args.changelogUrl as string, 'changelogUrl');
     }
 
-    let content = `**源分支**: \`${sourceBranch}\`\n**目标分支**: \`${targetBranch}\`\n**标题**: ${title}`;
-    if (args.changelogUrl) {
-      content += `\n\n📄 **变更日志**: [查看](${args.changelogUrl})`;
+    // 如果已审批，执行业务逻辑
+    if (context.approved) {
+      this.logger.info(`[CreateMR] Approved, creating MR: ${sourceBranch} → ${targetBranch}`);
+
+      try {
+        const mr = await this.client.createMergeRequest(
+          sourceBranch,
+          targetBranch,
+          title,
+          args.description as string | undefined
+        );
+
+        return this.success({
+          url: mr.url,
+          id: mr.id,
+          title: mr.title,
+        });
+      } catch (error) {
+        return this.error(`创建 MR 失败: ${(error as Error).message}`);
+      }
     }
 
-    const cardContext = buildFeishuCardInteractionContext({
-      operatorOpenId: context.userId,
-      chatId: context.chatId,
-      expiresAt: Date.now() + FEISHU_CARD_DEFAULT_TTL_MS,
-    });
-
-    const confirmEnvelope = createFeishuCardInteractionEnvelope({
-      kind: 'button',
-      action: 'gitlab.create_mr_confirm',
-      args: args as Record<string, string | number | boolean | null | undefined>,
-      context: cardContext,
-    });
-
-    const cancelEnvelope = createFeishuCardInteractionEnvelope({
-      kind: 'button',
-      action: 'gitlab.cancel',
-      context: cardContext,
-    });
-
-    const card = new FeishuCardBuilder()
-      .setConfig({ wide_screen_mode: true, update_multi: true })
-      .setHeader('🔀 创建 MR 确认', 'blue')
-      .addMarkdown(content)
-      .addActionRow(
-        new ActionBuilder()
-          .addPrimaryButton('确认创建', confirmEnvelope)
-          .addDefaultButton('取消', cancelEnvelope)
-          .build()
-      )
-      .build();
-
-    await context.sendCard(card);
-
-    return this.needsApproval(card, '已发送审批卡片');
+    // 未审批，返回审批数据
+    return {
+      success: true,
+      requiresApproval: true,
+      approvalData: {
+        action: 'gitlab.create_mr',
+        summary: `创建 MR: ${sourceBranch} → ${targetBranch}`,
+        details: {
+          sourceBranch,
+          targetBranch,
+          title,
+          description: args.description,
+          changelogUrl: args.changelogUrl,
+        },
+      },
+    };
   }
 }
 
@@ -210,7 +209,7 @@ class CreateMRConfirmTool extends BaseTool {
     this.client = client;
   }
 
-  async execute(args: Record<string, unknown>): Promise<ToolResult> {
+  async execute(args: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
     try {
       let mrDescription = (args.description as string) || '';
       if (args.changelogUrl) {
@@ -224,28 +223,19 @@ class CreateMRConfirmTool extends BaseTool {
         mrDescription
       );
 
-      const successCard = new FeishuCardBuilder()
-        .setConfig({ wide_screen_mode: true, update_multi: true })
-        .setHeader('✅ MR 创建成功', 'green')
-        .addMarkdown(`**标题**: ${args.title}\n**链接**: [查看 MR](${mr.url})`)
-        .build();
-
       return {
         success: true,
-        output: { message: 'MR 创建成功', url: mr.url },
-        card: successCard,
+        output: {
+          message: 'MR 创建成功',
+          url: mr.url,
+          id: mr.id,
+          title: mr.title,
+        },
       };
     } catch (error) {
-      const errorCard = new FeishuCardBuilder()
-        .setConfig({ wide_screen_mode: true, update_multi: true })
-        .setHeader('❌ MR 创建失败', 'red')
-        .addMarkdown(`**错误**: ${(error as Error).message}`)
-        .build();
-
       return {
         success: false,
-        error: (error as Error).message,
-        card: errorCard,
+        error: `创建 MR 失败: ${(error as Error).message}`,
       };
     }
   }

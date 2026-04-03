@@ -34,6 +34,13 @@ export interface ToolContext {
 
   /** 日志 */
   logger: Logger;
+
+  // ============================================================
+  // Flow 审批相关
+  // ============================================================
+
+  /** 此步骤是否已被审批（FlowEngine 恢复执行时设置） */
+  approved?: boolean;
 }
 
 // ============================================================
@@ -73,8 +80,19 @@ export interface ToolResult {
   error?: string;
   /** 是否需要审批 */
   requiresApproval?: boolean;
-  /** 卡片数据 */
+  /** 审批数据（不含 UI，由 ApprovalController 渲染卡片） */
+  approvalData?: {
+    /** 操作类型（用于选择卡片模板） */
+    action: string;
+    /** 操作摘要 */
+    summary: string;
+    /** 详细数据 */
+    details?: Record<string, unknown>;
+  };
+  /** @deprecated 使用 approvalData 代替，卡片渲染移到 ApprovalController */
   card?: unknown;
+  /** @deprecated 使用 FlowEngine 的暂停机制 */
+  approvalId?: string;
 }
 
 // ============================================================

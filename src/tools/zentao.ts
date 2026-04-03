@@ -123,23 +123,44 @@ class CloseBugTool extends BaseTool {
     this.client = client;
   }
 
-  async execute(args: Record<string, unknown>): Promise<ToolResult> {
+  async execute(args: Record<string, unknown>, context: ToolContext): Promise<ToolResult> {
     const bugId = args.bugId as number;
     if (!bugId) {
       return this.error('bugId is required');
     }
 
-    const comment = args.comment as string | undefined;
+    const comment = (args.comment as string) || `用户请求关闭此 Bug`;
 
-    if (comment) {
-      await this.client.addComment(bugId, comment);
+    // 如果已审批，执行业务逻辑
+    if (context.approved) {
+      this.logger.info(`[CloseBug] Approved, closing Bug #${bugId}`);
+
+      try {
+        await this.client.addComment(bugId, comment);
+        await this.client.closeIssue(bugId);
+
+        return this.success({
+          message: `Bug #${bugId} 已关闭`,
+          bugId,
+        });
+      } catch (error) {
+        return this.error(`关闭 Bug 失败: ${(error as Error).message}`);
+      }
     }
 
-    await this.client.closeIssue(bugId);
-
-    return this.success({
-      message: `Bug #${bugId} closed successfully`,
-    });
+    // 未审批，返回审批数据
+    return {
+      success: true,
+      requiresApproval: true,
+      approvalData: {
+        action: 'zentao.close_bug',
+        summary: `关闭 Bug #${bugId}`,
+        details: {
+          bugId,
+          comment,
+        },
+      },
+    };
   }
 }
 

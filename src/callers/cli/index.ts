@@ -157,10 +157,6 @@ OpenCode Gateway CLI
   gateway zentao.get_bugs --status active
   gateway zentao.close_bug --bugId 123 --comment "已修复"
 
-  # Workflow
-  gateway workflow.get_linked_bugs --mrId 45
-  gateway workflow.create_mr_for_bug --bugId 123
-
   # 飞书
   gateway feishu.send_file --filePath /path/to/file
 
